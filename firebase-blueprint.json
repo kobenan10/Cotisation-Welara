@@ -1,0 +1,37 @@
+{
+  "entities": {
+    "Member": {
+      "title": "Member",
+      "description": "A member of the association",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Full name of the member"
+        },
+        "payments": {
+          "type": "object",
+          "description": "Map of year to map of month to payment amount"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "history": {
+          "type": "array",
+          "description": "List of payment transactions",
+          "items": { "type": "object" }
+        }
+      },
+      "required": ["name", "payments", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/members/{personalCode}": {
+      "schema": {
+        "$ref": "#/entities/Member"
+      },
+      "description": "Members collection where the document ID is the personal access code"
+    }
+  }
+}

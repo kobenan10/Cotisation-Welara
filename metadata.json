@@ -1,0 +1,5 @@
+{
+  "name": "Gestion Cotisations",
+  "description": "Application de gestion des cotisations annuelles d'une association",
+  "requestFramePermissions": []
+}

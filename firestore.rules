@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: members
+    // Document ID: [personalCode] (e.g., random 8-character string)
+    // Fields:
+    //   - name: string (required) - Full name of the member
+    //   - payments: map (required) - Map of year to map of month to payment amount
+    //   - createdAt: timestamp (required) - Creation time
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.email == "k.kobenanfranck@gmail.com" && request.auth.token.email_verified == true;
+    }
+    
+    function isValidMember(data) {
+      return data.keys().hasAll(['name', 'payments', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.payments is map &&
+             (!('history' in data) || data.history is list);
+    }
+
+    match /members/{personalCode} {
+      // Members can read their own document if they know the code (the document ID)
+      // We only allow 'get' (single document read), not 'list' (querying multiple documents)
+      allow get: if true; 
+      
+      // Only admin can list all members
+      allow list: if isAdmin();
+      
+      // Only admin can create, update, or delete members
+      allow create: if isAdmin() && isValidMember(request.resource.data);
+      allow update: if isAdmin() && isValidMember(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAdmin();
+    }
+  }
+}
