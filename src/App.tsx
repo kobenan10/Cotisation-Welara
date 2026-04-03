@@ -444,12 +444,17 @@ export default function App() {
   // Login Screen
   if (!userRole) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-xl border border-slate-100 max-w-md w-full space-y-8">
-          <div className="text-center">
-            <h1 className="text-3xl font-bold text-slate-900">Gestion Cotisations</h1>
-            <p className="text-slate-500 mt-2">Connectez-vous pour accéder à votre espace</p>
+      <div className="min-h-screen bg-slate-50 bg-pagne-subtle flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl border border-slate-100 max-w-md w-full overflow-hidden">
+          <div className="h-32 bg-pagne w-full relative flex items-center justify-center">
+            <div className="absolute inset-0 bg-black/20"></div>
+            <h1 className="text-4xl font-bold text-white relative z-10 drop-shadow-lg tracking-wide">AKWABA</h1>
           </div>
+          <div className="p-8 space-y-8">
+            <div className="text-center">
+              <h2 className="text-2xl font-bold text-slate-900">Gestion Cotisations</h2>
+              <p className="text-slate-500 mt-2">Connectez-vous pour accéder à votre espace</p>
+            </div>
 
           {loginError && (
             <div className="bg-rose-50 text-rose-600 p-3 rounded-lg text-sm flex items-start gap-2">
@@ -503,6 +508,7 @@ export default function App() {
             Connexion Administrateur
           </button>
         </div>
+        </div>
       </div>
     );
   }
@@ -515,14 +521,15 @@ export default function App() {
     const yearPayments = memberData.payments[currentYear] || createEmptyYear();
 
     return (
-      <div className="min-h-screen bg-slate-50 p-4 md:p-8">
+      <div className="min-h-screen bg-slate-50 bg-pagne-subtle p-4 md:p-8">
         <div className="max-w-4xl mx-auto space-y-6">
-          <header className="flex items-center justify-between bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900">Bonjour, {memberData.name}</h1>
-              <p className="text-slate-500">Espace personnel de cotisation</p>
+          <header className="flex items-center justify-between bg-pagne p-6 rounded-2xl shadow-lg border border-transparent relative overflow-hidden">
+            <div className="absolute inset-0 bg-black/10"></div>
+            <div className="relative z-10">
+              <h1 className="text-2xl font-bold text-white drop-shadow-md">Bonjour, {memberData.name}</h1>
+              <p className="text-white/90 font-medium drop-shadow-md mt-1">Espace personnel de cotisation</p>
             </div>
-            <button onClick={handleLogout} className="text-slate-500 hover:text-slate-700 flex items-center gap-2 px-4 py-2 rounded-lg hover:bg-slate-100 transition-colors">
+            <button onClick={handleLogout} className="relative z-10 text-white hover:text-white flex items-center gap-2 px-4 py-2 rounded-xl bg-black/20 hover:bg-black/40 backdrop-blur-sm transition-all border border-white/20">
               <LogOut className="w-4 h-4" />
               Déconnexion
             </button>
@@ -643,7 +650,7 @@ export default function App() {
 
   // Admin View
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans p-4 md:p-8">
+    <div className="min-h-screen bg-slate-50 bg-pagne-subtle text-slate-900 font-sans p-4 md:p-8">
       <div className="max-w-[95vw] mx-auto space-y-8">
         
         {/* Header */}
