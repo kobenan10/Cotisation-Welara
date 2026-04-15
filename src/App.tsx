@@ -735,7 +735,7 @@ function AppContent() {
                 <div className="h-px w-8 bg-degha-orange"></div>
               </div>
               <h1 className="text-3xl font-black text-slate-900">Bonjour, {memberData.name}</h1>
-              <p className="text-slate-500 font-medium mt-1">Â TCHEAN • Votre situation de cotisation</p>
+              <p className="text-slate-500 font-medium mt-1">WELARA • Votre situation de cotisation</p>
             </div>
             <button onClick={handleLogout} className="relative z-10 text-slate-600 hover:text-degha-green flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 hover:bg-white transition-all border border-slate-200 hover:border-degha-green shadow-sm">
               <LogOut className="w-4 h-4" />
@@ -888,7 +888,7 @@ function AppContent() {
                 </select>
               </div>
             </div>
-            <p className="text-slate-500 font-medium mt-1">Â TCHEAN • Objectif: {ANNUAL_TARGET.toLocaleString()} FCFA/membre</p>
+            <p className="text-slate-500 font-medium mt-1">WELARA • Objectif: {ANNUAL_TARGET.toLocaleString()} FCFA/membre</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2 mr-2">
