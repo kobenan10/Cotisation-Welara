@@ -1,11 +1,62 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { CheckCircle, AlertCircle, Users, Wallet, Plus, Search, Upload, Loader2, Calendar, LogIn, Key, LogOut, Trash2, Filter, Clock, X } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef, Component } from 'react';
+import { CheckCircle, AlertCircle, Users, Wallet, Plus, Search, Upload, Loader2, Calendar, LogIn, Key, LogOut, Trash2, Filter, Clock, X, Download } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { GoogleGenAI, Type } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, db, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, writeBatch, serverTimestamp, getDocFromServer } from 'firebase/firestore';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  return errInfo;
+}
 
 type Month = 'JAN' | 'FEV' | 'MARS' | 'AVRIL' | 'MAI' | 'JUIN' | 'JUILL' | 'AOUT' | 'SEP' | 'OCT' | 'NOV' | 'DEC';
 
@@ -59,7 +110,73 @@ const stopSpeaking = () => {
   }
 };
 
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: any;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  public state: ErrorBoundaryState;
+  public props: ErrorBoundaryProps;
+
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full text-center space-y-4 border border-rose-100">
+            <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto">
+              <AlertCircle className="w-10 h-10" />
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900">Oups ! Quelque chose s'est mal passé.</h1>
+            <p className="text-slate-600">
+              Une erreur inattendue est survenue. Veuillez rafraîchir la page ou contacter l'administrateur.
+            </p>
+            <div className="bg-slate-50 p-4 rounded-xl text-left overflow-auto max-h-40">
+              <code className="text-xs text-rose-500">
+                {this.state.error?.message || String(this.state.error)}
+              </code>
+            </div>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full bg-slate-900 text-white py-3 rounded-xl font-bold hover:bg-slate-800 transition-colors"
+            >
+              Rafraîchir la page
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
+  );
+}
+
+function AppContent() {
   const [members, setMembers] = useState<Member[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'UP_TO_DATE' | 'LATE'>('ALL');
@@ -77,7 +194,48 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [isAuthReady, setIsAuthReady] = useState(false);
 
+  // PWA Install State
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallBtn, setShowInstallBtn] = useState(false);
+
   useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallBtn(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      console.log('User accepted the install prompt');
+    }
+    setDeferredPrompt(null);
+    setShowInstallBtn(false);
+  };
+
+  useEffect(() => {
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if(error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration. ");
+          setLoginError("Erreur de connexion : le client est hors ligne. Vérifiez votre configuration Firebase.");
+        }
+      }
+    }
+    testConnection();
+
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setAdminUser(user);
@@ -139,8 +297,8 @@ export default function App() {
         setLoginError("Code personnel invalide.");
       }
     } catch (error: any) {
-      console.error("Erreur de connexion membre:", error);
-      setLoginError("Erreur lors de la vérification du code.");
+      const errInfo = handleFirestoreError(error, OperationType.GET, `members/${code}`);
+      setLoginError(`Erreur lors de la vérification du code: ${errInfo.error}`);
     }
   };
 
@@ -223,7 +381,12 @@ export default function App() {
       }
     });
 
-    await batch.commit();
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'members (batch)');
+      throw error;
+    }
   };
 
   const importFromPDF = async (file: File) => {
@@ -328,7 +491,12 @@ export default function App() {
         }
       });
 
-      await batch.commit();
+      try {
+        await batch.commit();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, 'members (batch)');
+        throw error;
+      }
     }
   };
 
@@ -386,7 +554,7 @@ export default function App() {
         history: newHistory
       });
     } catch (error) {
-      console.error("Erreur lors de la mise à jour:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `members/${memberId}`);
     }
   };
 
@@ -410,7 +578,7 @@ export default function App() {
       });
       setNewMemberName('');
     } catch (error) {
-      console.error("Erreur lors de l'ajout:", error);
+      handleFirestoreError(error, OperationType.CREATE, `members/${code}`);
     }
   };
 
@@ -418,7 +586,7 @@ export default function App() {
     try {
       await deleteDoc(doc(db, 'members', memberId));
     } catch (error) {
-      console.error("Erreur lors de la suppression:", error);
+      handleFirestoreError(error, OperationType.DELETE, `members/${memberId}`);
     }
   };
 
@@ -438,22 +606,42 @@ export default function App() {
   });
 
   if (!isAuthReady) {
-    return <div className="min-h-screen flex items-center justify-center bg-slate-50"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>;
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-white space-y-6">
+        <div className="relative">
+          <div className="w-16 h-16 border-4 border-slate-100 border-t-degha-green rounded-full animate-spin"></div>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-8 h-8 bg-degha-orange rounded-full animate-pulse"></div>
+          </div>
+        </div>
+        <div className="text-center space-y-2">
+          <h2 className="text-xl font-black text-slate-900 tracking-tighter uppercase">Degha</h2>
+          <p className="text-xs text-slate-400 font-bold tracking-[0.3em] uppercase">Chargement...</p>
+        </div>
+      </div>
+    );
   }
 
   // Login Screen
   if (!userRole) {
     return (
-      <div className="min-h-screen bg-slate-50 bg-pagne-subtle flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-xl border border-slate-100 max-w-md w-full overflow-hidden">
-          <div className="h-32 bg-pagne w-full relative flex items-center justify-center">
-            <div className="absolute inset-0 bg-black/20"></div>
-            <h1 className="text-4xl font-bold text-white relative z-10 drop-shadow-lg tracking-wide">AKWABA</h1>
-          </div>
-          <div className="p-8 space-y-8">
-            <div className="text-center">
-              <h2 className="text-2xl font-bold text-slate-900">Gestion Cotisations</h2>
-              <p className="text-slate-500 mt-2">Connectez-vous pour accéder à votre espace</p>
+      <div className="min-h-screen bg-white flex items-center justify-center p-4 relative overflow-hidden">
+        {/* Vertical Stripes Motif */}
+        <div className="absolute left-0 top-0 bottom-0 w-3 bg-degha-orange"></div>
+        <div className="absolute left-3 top-0 bottom-0 w-3 bg-white"></div>
+        <div className="absolute left-6 top-0 bottom-0 w-3 bg-degha-green"></div>
+
+        <div className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden curled-corner">
+          <div className="curled-corner-flag"></div>
+          <div className="p-8 space-y-8 relative z-10">
+            <div className="text-center space-y-4">
+              <div className="flex flex-wrap items-center justify-center gap-2 text-xl font-medium text-slate-800">
+                <span>JE SUIS</span>
+                <span className="bg-degha-green text-white px-4 py-1 rounded-full font-bold">FIER</span>
+                <span>D'ÊTRE</span>
+              </div>
+              <h1 className="text-5xl font-black text-slate-900 tracking-tighter">DEGHA</h1>
+              <p className="text-[10px] uppercase tracking-[0.3em] text-slate-400 font-bold">WELARAFOGO</p>
             </div>
 
           {loginError && (
@@ -466,7 +654,7 @@ export default function App() {
           {loginError.includes('nouvel onglet') && (
             <button 
               onClick={() => window.open(window.location.href, '_blank')}
-              className="w-full bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium py-2 rounded-xl transition-colors text-sm border border-blue-200"
+              className="w-full bg-orange-50 hover:bg-white text-degha-orange font-bold py-2 rounded-xl transition-all text-sm border border-orange-200 hover:border-degha-orange shadow-sm"
             >
               Ouvrir dans un nouvel onglet
             </button>
@@ -486,7 +674,7 @@ export default function App() {
                 />
               </div>
             </div>
-            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-xl transition-colors">
+            <button type="submit" className="w-full bg-degha-green hover:bg-white text-white hover:text-degha-green font-bold py-3 rounded-xl transition-all border border-transparent hover:border-degha-green shadow-lg">
               Accéder à mes cotisations
             </button>
           </form>
@@ -502,14 +690,26 @@ export default function App() {
 
           <button 
             onClick={handleAdminLogin}
-            className="w-full bg-slate-900 hover:bg-slate-800 text-white font-medium py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+            className="w-full flex items-center justify-center gap-3 bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 rounded-xl transition-all shadow-lg"
           >
             <LogIn className="w-5 h-5" />
             Connexion Administrateur
           </button>
-        </div>
+
+          {showInstallBtn && (
+            <motion.button
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              onClick={handleInstallClick}
+              className="w-full flex items-center justify-center gap-3 bg-degha-orange hover:bg-white text-white hover:text-degha-orange font-bold py-3 rounded-xl transition-all border border-transparent hover:border-degha-orange shadow-lg mt-4"
+            >
+              <Download className="w-5 h-5" />
+              Installer l'application
+            </motion.button>
+          )}
         </div>
       </div>
+    </div>
     );
   }
 
@@ -521,15 +721,23 @@ export default function App() {
     const yearPayments = memberData.payments[currentYear] || createEmptyYear();
 
     return (
-      <div className="min-h-screen bg-slate-50 bg-pagne-subtle p-4 md:p-8">
+      <div className="min-h-screen bg-white p-4 md:p-8 relative">
+        {/* Vertical Stripes Motif */}
+        <div className="fixed left-0 top-0 bottom-0 w-2 bg-degha-orange"></div>
+        <div className="fixed left-2 top-0 bottom-0 w-2 bg-white"></div>
+        <div className="fixed left-4 top-0 bottom-0 w-2 bg-degha-green"></div>
+
         <div className="max-w-4xl mx-auto space-y-6">
-          <header className="flex items-center justify-between bg-pagne p-6 rounded-2xl shadow-lg border border-transparent relative overflow-hidden">
-            <div className="absolute inset-0 bg-black/10"></div>
+          <header className="flex items-center justify-between bg-white p-8 rounded-2xl shadow-lg border-l-8 border-degha-green relative overflow-hidden">
             <div className="relative z-10">
-              <h1 className="text-2xl font-bold text-white drop-shadow-md">Bonjour, {memberData.name}</h1>
-              <p className="text-white/90 font-medium drop-shadow-md mt-1">Espace personnel de cotisation</p>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs font-bold text-degha-green uppercase tracking-widest">Espace Degha</span>
+                <div className="h-px w-8 bg-degha-orange"></div>
+              </div>
+              <h1 className="text-3xl font-black text-slate-900">Bonjour, {memberData.name}</h1>
+              <p className="text-slate-500 font-medium mt-1">Â TCHEAN • Votre situation de cotisation</p>
             </div>
-            <button onClick={handleLogout} className="relative z-10 text-white hover:text-white flex items-center gap-2 px-4 py-2 rounded-xl bg-black/20 hover:bg-black/40 backdrop-blur-sm transition-all border border-white/20">
+            <button onClick={handleLogout} className="relative z-10 text-slate-600 hover:text-degha-green flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 hover:bg-white transition-all border border-slate-200 hover:border-degha-green shadow-sm">
               <LogOut className="w-4 h-4" />
               Déconnexion
             </button>
@@ -550,13 +758,13 @@ export default function App() {
               </div>
 
               <div className="flex gap-4">
-                <div className="text-center px-6 py-3 bg-slate-50 rounded-xl border border-slate-200">
-                  <p className="text-sm text-slate-500 font-medium">Total Payé</p>
-                  <p className="text-xl font-bold text-slate-900">{total.toLocaleString()} FCFA</p>
+                <div className="text-center px-6 py-3 bg-orange-50 rounded-xl border border-orange-200">
+                  <p className="text-sm text-degha-orange font-bold">Total Payé</p>
+                  <p className="text-xl font-black text-slate-900">{total.toLocaleString()} FCFA</p>
                 </div>
-                <div className="text-center px-6 py-3 bg-slate-50 rounded-xl border border-slate-200">
-                  <p className="text-sm text-slate-500 font-medium">Reste à payer</p>
-                  <p className={`text-xl font-bold ${reste > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                <div className="text-center px-6 py-3 bg-green-50 rounded-xl border border-green-200">
+                  <p className="text-sm text-degha-green font-bold">Reste à payer</p>
+                  <p className={`text-xl font-black ${reste > 0 ? 'text-rose-600' : 'text-degha-green'}`}>
                     {reste > 0 ? reste.toLocaleString() : '0'} FCFA
                   </p>
                 </div>
@@ -566,8 +774,8 @@ export default function App() {
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="p-4 border-b border-slate-200 bg-slate-50/50 flex justify-between items-center">
               <h2 className="font-semibold text-slate-800">Détails de l'année {currentYear}</h2>
-              <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium border ${
-                isUpToDate ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200'
+              <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-bold border ${
+                isUpToDate ? 'bg-green-50 text-degha-green border-green-200' : 'bg-orange-50 text-degha-orange border-orange-200'
               }`}>
                 {isUpToDate ? <CheckCircle className="w-4 h-4 mr-1.5" /> : <AlertCircle className="w-4 h-4 mr-1.5" />}
                 {isUpToDate ? 'À jour' : 'En retard'}
@@ -588,7 +796,7 @@ export default function App() {
           <div className="mt-6 flex justify-end">
             <button 
               onClick={() => setHistoryModalMember(memberData)}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition-colors shadow-sm font-medium text-sm"
+              className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl hover:bg-degha-green hover:text-white hover:border-degha-green transition-all shadow-sm font-bold text-sm"
             >
               <Clock className="w-4 h-4" />
               Voir l'historique des paiements
@@ -650,20 +858,29 @@ export default function App() {
 
   // Admin View
   return (
-    <div className="min-h-screen bg-slate-50 bg-pagne-subtle text-slate-900 font-sans p-4 md:p-8">
+    <div className="min-h-screen bg-white text-slate-900 font-sans p-4 md:p-8 relative">
+      {/* Vertical Stripes Motif */}
+      <div className="fixed left-0 top-0 bottom-0 w-2 bg-degha-orange"></div>
+      <div className="fixed left-2 top-0 bottom-0 w-2 bg-white"></div>
+      <div className="fixed left-4 top-0 bottom-0 w-2 bg-degha-green"></div>
+
       <div className="max-w-[95vw] mx-auto space-y-8">
         
         {/* Header */}
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-bold tracking-tight text-slate-900">Cotisations Annuelles</h1>
-              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-300 shadow-sm">
-                <Calendar className="w-4 h-4 text-slate-500" />
+        <header className="flex flex-col md:flex-row md:items-center justify-between gap-6 bg-white p-8 rounded-2xl shadow-lg border-l-8 border-degha-orange relative overflow-hidden">
+          <div className="relative z-10">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-bold text-degha-orange uppercase tracking-widest">Administration Degha</span>
+              <div className="h-px w-8 bg-degha-green"></div>
+            </div>
+            <div className="flex flex-wrap items-center gap-4">
+              <h1 className="text-4xl font-black text-slate-900 tracking-tight">Cotisations Mensuelles</h1>
+              <div className="flex items-center gap-2 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
+                <Calendar className="w-5 h-5 text-slate-500" />
                 <select 
                   value={currentYear} 
                   onChange={(e) => setCurrentYear(Number(e.target.value))}
-                  className="bg-transparent outline-none text-sm font-bold text-blue-600 cursor-pointer"
+                  className="bg-transparent outline-none text-lg font-bold text-degha-green cursor-pointer"
                 >
                   {YEARS.map(y => (
                     <option key={y} value={y}>{y}</option>
@@ -671,7 +888,7 @@ export default function App() {
                 </select>
               </div>
             </div>
-            <p className="text-slate-500 mt-1">Espace Administrateur (Objectif: {ANNUAL_TARGET.toLocaleString()} FCFA/membre)</p>
+            <p className="text-slate-500 font-medium mt-1">Â TCHEAN • Objectif: {ANNUAL_TARGET.toLocaleString()} FCFA/membre</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2 mr-2">
@@ -686,7 +903,7 @@ export default function App() {
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isImporting}
-                className="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-50 cursor-pointer"
+                className="bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-bold transition-all disabled:opacity-50 cursor-pointer hover:border-degha-orange hover:text-degha-orange shadow-sm"
               >
                 {isImporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                 {isImporting ? 'Importation...' : 'Importer'}
@@ -702,22 +919,26 @@ export default function App() {
               />
               <button 
                 type="submit"
-                className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors cursor-pointer"
+                className="bg-degha-green hover:bg-white text-white hover:text-degha-green px-4 py-2 rounded-lg flex items-center gap-1 text-sm font-bold transition-all border border-transparent hover:border-degha-green cursor-pointer shadow-sm"
               >
                 <Plus className="w-4 h-4" />
                 Ajouter
               </button>
             </form>
-            <button onClick={handleLogout} className="ml-2 text-slate-500 hover:text-slate-700 flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-200 transition-colors">
-              <LogOut className="w-4 h-4" />
+            <button 
+              onClick={handleLogout} 
+              className="ml-2 bg-slate-100 hover:bg-degha-orange text-slate-600 hover:text-white p-3 rounded-xl transition-all border border-slate-200 hover:border-degha-orange shadow-sm"
+              title="Déconnexion"
+            >
+              <LogOut className="w-5 h-5" />
             </button>
           </div>
         </header>
 
         {/* Dashboard Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex items-center gap-4">
-            <div className="p-3 bg-blue-100 text-blue-600 rounded-lg">
+          <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-degha-orange flex items-center gap-4">
+            <div className="p-3 bg-orange-50 text-degha-orange rounded-lg">
               <Wallet className="w-8 h-8" />
             </div>
             <div>
@@ -726,8 +947,8 @@ export default function App() {
             </div>
           </div>
           
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex items-center gap-4">
-            <div className="p-3 bg-emerald-100 text-emerald-600 rounded-lg">
+          <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-degha-green flex items-center gap-4">
+            <div className="p-3 bg-green-50 text-degha-green rounded-lg">
               <CheckCircle className="w-8 h-8" />
             </div>
             <div>
@@ -736,8 +957,8 @@ export default function App() {
             </div>
           </div>
 
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex items-center gap-4">
-             <div className="p-3 bg-amber-100 text-amber-600 rounded-lg">
+          <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-slate-900 flex items-center gap-4">
+             <div className="p-3 bg-slate-100 text-slate-900 rounded-lg">
               <Users className="w-8 h-8" />
             </div>
             <div>
@@ -759,7 +980,7 @@ export default function App() {
                   placeholder="Rechercher un membre..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm w-full sm:w-64 bg-white"
+                  className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm w-full sm:w-64 bg-white"
                 />
               </div>
               <div className="relative w-full sm:w-auto">
@@ -767,7 +988,7 @@ export default function App() {
                 <select
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value as any)}
-                  className="pl-9 pr-8 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm w-full sm:w-auto bg-white appearance-none cursor-pointer"
+                  className="pl-9 pr-8 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm w-full sm:w-auto bg-white appearance-none cursor-pointer"
                 >
                   <option value="ALL">Tous les statuts</option>
                   <option value="UP_TO_DATE">À jour</option>
@@ -781,7 +1002,7 @@ export default function App() {
             <table className="min-w-full divide-y divide-slate-200">
               <thead className="bg-slate-50 sticky top-0 z-20 shadow-[0_1px_0_0_#e2e8f0]">
                 <tr>
-                  <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider sticky left-0 top-0 bg-slate-50 z-30 shadow-[1px_0_0_0_#e2e8f0]">
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-bold text-degha-green uppercase tracking-wider sticky left-0 top-0 bg-slate-50 z-30 shadow-[1px_0_0_0_#e2e8f0]">
                     Nom & Prénoms
                   </th>
                   <th scope="col" className="px-4 py-3 text-center text-xs font-semibold text-slate-600 uppercase tracking-wider bg-slate-50">
@@ -822,15 +1043,15 @@ export default function App() {
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.3, delay: index * 0.03 }}
-                        className="hover:bg-blue-50/40 transition-all duration-300 ease-in-out group"
+                        className="hover:bg-orange-50/40 transition-all duration-300 ease-in-out group"
                       >
                         <td 
-                          className="px-4 py-3 whitespace-nowrap text-sm font-medium text-slate-900 sticky left-0 bg-white group-hover:bg-blue-50/40 z-10 shadow-[1px_0_0_0_#e2e8f0] transition-all duration-300 ease-in-out relative cursor-pointer"
+                          className="px-4 py-3 whitespace-nowrap text-sm font-medium text-slate-900 sticky left-0 bg-white group-hover:bg-orange-50/40 z-10 shadow-[1px_0_0_0_#e2e8f0] transition-all duration-300 ease-in-out relative cursor-pointer"
                           onMouseEnter={() => speakName(member.name)}
                           onMouseLeave={stopSpeaking}
                           title="Écouter le nom"
                         >
-                          <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500 scale-y-0 group-hover:scale-y-100 transition-transform duration-300 ease-in-out origin-center" />
+                          <div className="absolute left-0 top-0 bottom-0 w-1 bg-degha-orange scale-y-0 group-hover:scale-y-100 transition-transform duration-300 ease-in-out origin-center" />
                           {member.name}
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-center font-mono font-bold text-slate-500 bg-slate-50/30">
@@ -844,41 +1065,41 @@ export default function App() {
                               step="500"
                               value={yearPayments[m]}
                               onChange={(e) => handlePaymentChange(member.id, currentYear, m, e.target.value)}
-                              className="w-16 p-1.5 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-center text-slate-700 bg-transparent hover:bg-white transition-all duration-300"
+                              className="w-16 p-1.5 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-degha-green focus:border-degha-green text-center text-slate-700 bg-transparent hover:bg-white transition-all duration-300"
                               placeholder="0"
                             />
                           </td>
                         ))}
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-center font-bold text-slate-700 bg-slate-50/30 group-hover:bg-blue-50/20 transition-colors duration-300">
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-center font-bold text-slate-700 bg-slate-50/30 group-hover:bg-orange-50/20 transition-colors duration-300">
                           {total.toLocaleString()}
                         </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-center font-medium bg-slate-50/30 group-hover:bg-blue-50/20 transition-colors duration-300">
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-center font-medium bg-slate-50/30 group-hover:bg-orange-50/20 transition-colors duration-300">
                           <span className={reste > 0 ? 'text-rose-600' : 'text-slate-400'}>
                             {reste > 0 ? reste.toLocaleString() : '-'}
                           </span>
                         </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-center bg-slate-50/30 group-hover:bg-blue-50/20 transition-colors duration-300">
+                        <td className="px-4 py-3 whitespace-nowrap text-center bg-slate-50/30 group-hover:bg-orange-50/20 transition-colors duration-300">
                           <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
                             isUpToDate 
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
-                              : 'bg-rose-50 text-rose-700 border-rose-200'
+                              ? 'bg-green-50 text-degha-green border-green-200' 
+                              : 'bg-orange-50 text-degha-orange border-orange-200'
                           }`}>
                             {isUpToDate ? <CheckCircle className="w-3.5 h-3.5 mr-1" /> : <AlertCircle className="w-3.5 h-3.5 mr-1" />}
                             {isUpToDate ? 'À jour' : 'En retard'}
                           </span>
                         </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-center bg-slate-50/30 group-hover:bg-blue-50/20 transition-colors duration-300">
+                        <td className="px-4 py-3 whitespace-nowrap text-center bg-slate-50/30 group-hover:bg-orange-50/20 transition-colors duration-300">
                           <div className="flex items-center justify-center gap-2">
                             <button 
                               onClick={() => setHistoryModalMember(member)}
-                              className="text-slate-400 hover:text-blue-600 transition-colors p-1.5 rounded-md hover:bg-blue-50"
+                              className="text-slate-400 hover:text-degha-green transition-all p-1.5 rounded-md hover:bg-green-50"
                               title="Historique des paiements"
                             >
                               <Clock className="w-4 h-4" />
                             </button>
                             <button 
                               onClick={() => handleDeleteMember(member.id)}
-                              className="text-slate-400 hover:text-rose-600 transition-colors p-1.5 rounded-md hover:bg-rose-50"
+                              className="text-slate-400 hover:text-degha-orange transition-all p-1.5 rounded-md hover:bg-orange-50"
                               title="Supprimer le membre"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -911,9 +1132,9 @@ export default function App() {
               onClick={e => e.stopPropagation()}
               className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg overflow-hidden flex flex-col max-h-[80vh]"
             >
-              <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+              <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50 border-l-8 border-degha-green">
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                  <Clock className="w-5 h-5 text-blue-600" />
+                  <Clock className="w-5 h-5 text-degha-green" />
                   Historique - {historyModalMember.name}
                 </h3>
                 <button onClick={() => setHistoryModalMember(null)} className="text-slate-400 hover:text-slate-600 p-1 rounded-md hover:bg-slate-200 transition-colors">
@@ -924,8 +1145,8 @@ export default function App() {
                 {historyModalMember.history && historyModalMember.history.length > 0 ? (
                   <div className="space-y-4">
                     {[...historyModalMember.history].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(tx => (
-                      <div key={tx.id} className="flex items-start gap-4 p-3 rounded-xl border border-slate-100 bg-slate-50/50">
-                        <div className="bg-blue-100 text-blue-600 p-2 rounded-lg shrink-0">
+                      <div key={tx.id} className="flex items-start gap-4 p-3 rounded-xl border border-slate-100 bg-slate-50/50 border-l-4 border-degha-orange">
+                        <div className="bg-orange-100 text-degha-orange p-2 rounded-lg shrink-0">
                           <Wallet className="w-4 h-4" />
                         </div>
                         <div className="flex-1">

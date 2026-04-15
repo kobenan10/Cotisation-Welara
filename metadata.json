@@ -1,5 +1,5 @@
 {
-  "name": "Gestion Cotisations",
-  "description": "Application de gestion des cotisations annuelles d'une association",
+  "name": "Degha Cotisations",
+  "description": "Application PWA de gestion des cotisations pour l'association Degha. Suivez vos paiements en temps réel.",
   "requestFramePermissions": []
 }

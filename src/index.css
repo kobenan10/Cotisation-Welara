@@ -1,12 +1,53 @@
 @import "tailwindcss";
 
 @layer utilities {
-  .bg-pagne {
-    background-color: #0A1C40;
-    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cpath d='M0 0h60v60H0z' fill='%230A1C40'/%3E%3Cpath d='M30 60c16.569 0 30-13.431 30-30S46.569 0 30 0 0 13.431 0 30s13.431 30 30 30zm0-10c11.046 0 20-8.954 20-20S41.046 10 30 10 10 18.954 10 30s8.954 20 20 20z' fill='%23F4B41A'/%3E%3Cpath d='M30 50c11.046 0 20-8.954 20-20S41.046 10 30 10 10 18.954 10 30s8.954 20 20 20zm0-10c5.523 0 10-4.477 10-10s-4.477-10-10-10-10 4.477-10 10 4.477 10 10 10z' fill='%23C3272B'/%3E%3Ccircle cx='30' cy='30' r='10' fill='%23005A34'/%3E%3Cpath d='M0 0l30 30L60 0v10L30 40 0 10V0zm0 60l30-30 30 30V50L30 20 0 50v10z' fill='%23F4B41A' opacity='0.4'/%3E%3C/g%3E%3C/svg%3E");
+  .bg-degha-gradient {
+    background: linear-gradient(to bottom, #FF8200 0%, #FF8200 33.33%, #FFFFFF 33.33%, #FFFFFF 66.66%, #009E60 66.66%, #009E60 100%);
   }
-  .bg-pagne-subtle {
-    background-color: #fafaf9;
-    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cpath d='M30 60c16.569 0 30-13.431 30-30S46.569 0 30 0 0 13.431 0 30s13.431 30 30 30zm0-10c11.046 0 20-8.954 20-20S41.046 10 30 10 10 18.954 10 30s8.954 20 20 20z' fill='%23F4B41A' fill-opacity='0.08'/%3E%3Cpath d='M30 50c11.046 0 20-8.954 20-20S41.046 10 30 10 10 18.954 10 30s8.954 20 20 20zm0-10c5.523 0 10-4.477 10-10s-4.477-10-10-10-10 4.477-10 10 4.477 10 10 10z' fill='%23C3272B' fill-opacity='0.04'/%3E%3C/g%3E%3C/svg%3E");
+  .border-degha-left {
+    border-left: 12px solid #FF8200;
+    position: relative;
+  }
+  .border-degha-left::after {
+    content: '';
+    position: absolute;
+    left: -24px;
+    top: 0;
+    bottom: 0;
+    width: 12px;
+    background-color: #009E60;
+  }
+  .text-degha-green {
+    color: #009E60;
+  }
+  .bg-degha-green {
+    background-color: #009E60;
+  }
+  .bg-degha-orange {
+    background-color: #FF8200;
+  }
+  .curled-corner {
+    position: relative;
+  }
+  .curled-corner::before {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    border-width: 0 0 40px 40px;
+    border-style: solid;
+    border-color: transparent transparent #fff #e2e8f0;
+    background: #e2e8f0;
+    box-shadow: -2px -2px 5px rgba(0,0,0,0.1);
+    z-index: 2;
+  }
+  .curled-corner-flag {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 60px;
+    height: 60px;
+    background: linear-gradient(135deg, #FF8200 0%, #FFFFFF 50%, #009E60 100%);
+    z-index: 1;
   }
 }

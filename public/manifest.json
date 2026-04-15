@@ -1,0 +1,23 @@
+{
+  "name": "Degha Cotisations",
+  "short_name": "Degha",
+  "description": "Gestion des cotisations de l'association Degha",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#009E60",
+  "icons": [
+    {
+      "src": "https://picsum.photos/seed/degha/192/192",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://picsum.photos/seed/degha/512/512",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
