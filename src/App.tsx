@@ -65,7 +65,6 @@ const MONTHS: Month[] = ['JAN', 'FEV', 'MARS', 'AVRIL', 'MAI', 'JUIN', 'JUILL', 
 const YEARS = [2025, 2026, 2027, 2028, 2029, 2030];
 const ANNUAL_TARGET = 6000;
 const MONTHLY_DUE = 500;
-const GOOGLE_SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1KbHo0CJ9FomRXQ9AZxHoy84_qsqt-rECsVmJtTGc4Ok/export?format=csv';
 
 const createEmptyYear = () => MONTHS.reduce((acc, month) => ({ ...acc, [month]: '' }), {} as Record<Month, number | ''>);
 
@@ -214,7 +213,6 @@ function AppContent() {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'UP_TO_DATE' | 'LATE'>('ALL');
   const [newMemberName, setNewMemberName] = useState('');
   const [isImporting, setIsImporting] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
   const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear() >= 2025 && new Date().getFullYear() <= 2030 ? new Date().getFullYear() : 2025);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [historyModalMember, setHistoryModalMember] = useState<Member | null>(null);
@@ -298,17 +296,6 @@ function AppContent() {
     }
   }, [userRole, isAuthReady]);
 
-  // Auto-sync with Google Sheets for admins on load
-  useEffect(() => {
-    if (userRole === 'admin' && isAuthReady) {
-      const hasSynced = sessionStorage.getItem('hasSyncedGoogleSheets');
-      if (!hasSynced) {
-        syncWithGoogleSheets();
-        sessionStorage.setItem('hasSyncedGoogleSheets', 'true');
-      }
-    }
-  }, [userRole, isAuthReady]);
-
   const handleAdminLogin = async () => {
     if (isLoggingIn) return;
     setIsLoggingIn(true);
@@ -361,78 +348,6 @@ function AppContent() {
     setUserRole(null);
     setMemberData(null);
     setMemberCodeInput('');
-  };
-
-  const syncWithGoogleSheets = async () => {
-    setIsSyncing(true);
-    try {
-      const response = await fetch(GOOGLE_SHEET_CSV_URL);
-      const csvText = await response.text();
-      
-      const snapshot = await getDocs(collection(db, 'members'));
-      const currentMembers: Member[] = [];
-      snapshot.forEach(doc => currentMembers.push({ id: doc.id, ...doc.data() } as Member));
-      const existingNames = new Map<string, Member>(currentMembers.map(m => [m.name.toLowerCase(), m]));
-
-      Papa.parse(csvText, {
-        header: true,
-        skipEmptyLines: true,
-        complete: async (results) => {
-          const rows = results.data as any[];
-          const batch = writeBatch(db);
-          const processedNames = new Set<string>();
-
-          rows.forEach((row) => {
-            const name = row['Nom & Prenoms'];
-            if (!name || name.toUpperCase().includes('TOTAL')) return;
-            
-            const lowerName = name.trim().toLowerCase();
-            if (processedNames.has(lowerName)) return;
-            processedNames.add(lowerName);
-
-            const yearPayments: Record<Month, number | ''> = createEmptyYear();
-            MONTHS.forEach(m => {
-              const val = parseInt(row[m], 10);
-              if (!isNaN(val)) yearPayments[m] = val;
-            });
-
-            if (existingNames.has(lowerName)) {
-              const existingMember = existingNames.get(lowerName)!;
-              const docRef = doc(db, 'members', existingMember.id);
-              
-              // Merge current sheet payments with existing payments from other years
-              const allPayments = { ...existingMember.payments, [currentYear]: yearPayments };
-              const redistributed = redistributePayments(allPayments);
-              
-              batch.update(docRef, {
-                payments: redistributed
-              });
-            } else {
-              const code = generateCode();
-              const docRef = doc(db, 'members', code);
-              const redistributed = redistributePayments({ [currentYear]: yearPayments });
-              batch.set(docRef, {
-                name: name.trim(),
-                payments: redistributed,
-                createdAt: serverTimestamp()
-              });
-            }
-          });
-
-          await batch.commit();
-          alert("Synchronisation avec Google Sheets réussie !");
-        },
-        error: (error: any) => {
-          console.error("Erreur PapaParse:", error);
-          alert("Erreur lors de l'analyse du fichier Google Sheets.");
-        }
-      });
-    } catch (error) {
-      console.error("Erreur de synchronisation:", error);
-      alert("Erreur lors de la récupération des données Google Sheets. Vérifiez que le partage est activé.");
-    } finally {
-      setIsSyncing(false);
-    }
   };
 
   const exportToExcel = () => {
@@ -1083,7 +998,23 @@ function AppContent() {
             </div>
             <div className="flex flex-wrap items-center gap-4">
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">Cotisations Mensuelles</h1>
-              <span className="text-[10px] bg-slate-100 text-slate-400 px-2 py-1 rounded-md font-mono">v6.0</span>
+              <span className="text-[10px] bg-blue-100 text-blue-600 px-2 py-1 rounded-md font-mono font-bold animate-pulse">v7.0 - À JOUR</span>
+              <button 
+                onClick={() => {
+                  if (confirm("Voulez-vous forcer le nettoyage du cache et recharger la page ?")) {
+                    if ('serviceWorker' in navigator) {
+                      navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
+                    }
+                    if ('caches' in window) {
+                      caches.keys().then(names => names.forEach(n => caches.delete(n)));
+                    }
+                    window.location.reload();
+                  }
+                }}
+                className="text-[10px] bg-rose-100 text-rose-600 px-2 py-1 rounded-md hover:bg-rose-200 transition-colors"
+              >
+                Forcer la mise à jour
+              </button>
               <div className="flex items-center gap-2 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
                 <Calendar className="w-5 h-5 text-slate-500" />
                 <select 
@@ -1100,15 +1031,6 @@ function AppContent() {
             <p className="text-slate-500 font-medium mt-1">WELARA • Objectif: {ANNUAL_TARGET.toLocaleString()} FCFA/membre</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <button 
-              type="button"
-              onClick={syncWithGoogleSheets}
-              disabled={isSyncing}
-              className="bg-degha-green hover:bg-white text-white hover:text-degha-green px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-bold transition-all disabled:opacity-50 cursor-pointer border border-transparent hover:border-degha-green shadow-md"
-            >
-              {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              {isSyncing ? 'Synchronisation...' : 'Sync Google Sheet'}
-            </button>
             <div className="flex items-center gap-2 mr-2">
               <input
                 type="file"
