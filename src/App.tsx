@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef, Component } from 'react';
-import { CheckCircle, AlertCircle, Users, Wallet, Plus, Search, Upload, Loader2, Calendar, LogIn, Key, LogOut, Trash2, Filter, Clock, X, Download } from 'lucide-react';
+import Papa from 'papaparse';
+import { CheckCircle, AlertCircle, Users, Wallet, Plus, Search, Upload, Loader2, Calendar, LogIn, Key, LogOut, Trash2, Filter, Clock, X, Download, RefreshCw } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { GoogleGenAI, Type } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, db, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, writeBatch, serverTimestamp, getDocFromServer } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, writeBatch, serverTimestamp, getDocFromServer, getDocs } from 'firebase/firestore';
 
 enum OperationType {
   CREATE = 'create',
@@ -64,8 +65,39 @@ const MONTHS: Month[] = ['JAN', 'FEV', 'MARS', 'AVRIL', 'MAI', 'JUIN', 'JUILL', 
 const YEARS = [2025, 2026, 2027, 2028, 2029, 2030];
 const ANNUAL_TARGET = 6000;
 const MONTHLY_DUE = 500;
+const GOOGLE_SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1KbHo0CJ9FomRXQ9AZxHoy84_qsqt-rECsVmJtTGc4Ok/export?format=csv';
 
 const createEmptyYear = () => MONTHS.reduce((acc, month) => ({ ...acc, [month]: '' }), {} as Record<Month, number | ''>);
+
+const redistributePayments = (allPayments: Record<number, Record<Month, number | ''>>) => {
+  // 1. Calculate total sum of all payments across all years
+  let totalSum = 0;
+  Object.values(allPayments).forEach(yearData => {
+    Object.values(yearData).forEach(val => {
+      if (typeof val === 'number') totalSum += val;
+    });
+  });
+
+  // 2. Create new empty structure for all years
+  const newPayments: Record<number, Record<Month, number | ''>> = {};
+  YEARS.forEach(y => {
+    newPayments[y] = createEmptyYear();
+  });
+
+  // 3. Distribute totalSum starting from the earliest year and month
+  let remaining = totalSum;
+  for (const year of YEARS) {
+    for (const month of MONTHS) {
+      if (remaining <= 0) break;
+      const amountToFill = Math.min(remaining, MONTHLY_DUE);
+      newPayments[year][month] = amountToFill;
+      remaining -= amountToFill;
+    }
+    if (remaining <= 0) break;
+  }
+  
+  return newPayments;
+};
 
 interface Transaction {
   id: string;
@@ -182,6 +214,7 @@ function AppContent() {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'UP_TO_DATE' | 'LATE'>('ALL');
   const [newMemberName, setNewMemberName] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear() >= 2025 && new Date().getFullYear() <= 2030 ? new Date().getFullYear() : 2025);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [historyModalMember, setHistoryModalMember] = useState<Member | null>(null);
@@ -193,6 +226,7 @@ function AppContent() {
   const [memberCodeInput, setMemberCodeInput] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   // PWA Install State
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -264,7 +298,20 @@ function AppContent() {
     }
   }, [userRole, isAuthReady]);
 
+  // Auto-sync with Google Sheets for admins on load
+  useEffect(() => {
+    if (userRole === 'admin' && isAuthReady) {
+      const hasSynced = sessionStorage.getItem('hasSyncedGoogleSheets');
+      if (!hasSynced) {
+        syncWithGoogleSheets();
+        sessionStorage.setItem('hasSyncedGoogleSheets', 'true');
+      }
+    }
+  }, [userRole, isAuthReady]);
+
   const handleAdminLogin = async () => {
+    if (isLoggingIn) return;
+    setIsLoggingIn(true);
     try {
       setLoginError('');
       await signInWithPopup(auth, googleProvider);
@@ -274,9 +321,13 @@ function AppContent() {
         setLoginError("Pop-up bloqué par le navigateur. Veuillez autoriser les pop-ups ou ouvrir l'application dans un nouvel onglet.");
       } else if (error.code === 'auth/network-request-failed') {
         setLoginError("Erreur réseau. Le navigateur bloque peut-être la connexion (cookies tiers, AdBlock, etc.). Veuillez ouvrir l'application dans un nouvel onglet.");
+      } else if (error.message?.includes('INTERNAL ASSERTION FAILED')) {
+        setLoginError("Une erreur interne Firebase est survenue. Veuillez rafraîchir la page et réessayer, ou ouvrir l'application dans un nouvel onglet.");
       } else {
         setLoginError(`Erreur de connexion administrateur: ${error.message || error.code}`);
       }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -303,12 +354,109 @@ function AppContent() {
   };
 
   const handleLogout = async () => {
+    setIsLoggingIn(false);
     if (userRole === 'admin') {
       await signOut(auth);
     }
     setUserRole(null);
     setMemberData(null);
     setMemberCodeInput('');
+  };
+
+  const syncWithGoogleSheets = async () => {
+    setIsSyncing(true);
+    try {
+      const response = await fetch(GOOGLE_SHEET_CSV_URL);
+      const csvText = await response.text();
+      
+      const snapshot = await getDocs(collection(db, 'members'));
+      const currentMembers: Member[] = [];
+      snapshot.forEach(doc => currentMembers.push({ id: doc.id, ...doc.data() } as Member));
+      const existingNames = new Map<string, Member>(currentMembers.map(m => [m.name.toLowerCase(), m]));
+
+      Papa.parse(csvText, {
+        header: true,
+        skipEmptyLines: true,
+        complete: async (results) => {
+          const rows = results.data as any[];
+          const batch = writeBatch(db);
+          const processedNames = new Set<string>();
+
+          rows.forEach((row) => {
+            const name = row['Nom & Prenoms'];
+            if (!name || name.toUpperCase().includes('TOTAL')) return;
+            
+            const lowerName = name.trim().toLowerCase();
+            if (processedNames.has(lowerName)) return;
+            processedNames.add(lowerName);
+
+            const yearPayments: Record<Month, number | ''> = createEmptyYear();
+            MONTHS.forEach(m => {
+              const val = parseInt(row[m], 10);
+              if (!isNaN(val)) yearPayments[m] = val;
+            });
+
+            if (existingNames.has(lowerName)) {
+              const existingMember = existingNames.get(lowerName)!;
+              const docRef = doc(db, 'members', existingMember.id);
+              
+              // Merge current sheet payments with existing payments from other years
+              const allPayments = { ...existingMember.payments, [currentYear]: yearPayments };
+              const redistributed = redistributePayments(allPayments);
+              
+              batch.update(docRef, {
+                payments: redistributed
+              });
+            } else {
+              const code = generateCode();
+              const docRef = doc(db, 'members', code);
+              const redistributed = redistributePayments({ [currentYear]: yearPayments });
+              batch.set(docRef, {
+                name: name.trim(),
+                payments: redistributed,
+                createdAt: serverTimestamp()
+              });
+            }
+          });
+
+          await batch.commit();
+          alert("Synchronisation avec Google Sheets réussie !");
+        },
+        error: (error: any) => {
+          console.error("Erreur PapaParse:", error);
+          alert("Erreur lors de l'analyse du fichier Google Sheets.");
+        }
+      });
+    } catch (error) {
+      console.error("Erreur de synchronisation:", error);
+      alert("Erreur lors de la récupération des données Google Sheets. Vérifiez que le partage est activé.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const exportToExcel = () => {
+    const data = members.map((member, index) => {
+      const yearPayments = member.payments[currentYear] || createEmptyYear();
+      const total = Object.values(yearPayments).reduce<number>((sum, val) => sum + (typeof val === 'number' ? val : 0), 0);
+      
+      const row: any = {
+        'Ordre': index + 1,
+        'Nom & Prenoms': member.name
+      };
+      
+      MONTHS.forEach(m => {
+        row[m] = yearPayments[m] === '' ? 0 : yearPayments[m];
+      });
+      
+      row['TOTAL'] = total;
+      return row;
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, `Cotisations ${currentYear}`);
+    XLSX.writeFile(workbook, `Degha_Cotisations_${currentYear}.xlsx`);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -362,20 +510,20 @@ function AppContent() {
       if (existingNames.has(lowerName)) {
         const existingMember = existingNames.get(lowerName)!;
         const docRef = doc(db, 'members', existingMember.id);
-        const existingYearPayments = existingMember.payments[currentYear] || createEmptyYear();
-        const mergedYearPayments = { ...existingYearPayments };
-        MONTHS.forEach(m => {
-          if (yearPayments[m] !== '') mergedYearPayments[m] = yearPayments[m];
-        });
+        
+        const allPayments = { ...existingMember.payments, [currentYear]: yearPayments };
+        const redistributed = redistributePayments(allPayments);
+        
         batch.update(docRef, {
-          [`payments.${currentYear}`]: mergedYearPayments
+          payments: redistributed
         });
       } else {
         const code = generateCode();
         const docRef = doc(db, 'members', code);
+        const redistributed = redistributePayments({ [currentYear]: yearPayments });
         batch.set(docRef, {
           name: cleanName,
-          payments: { [currentYear]: yearPayments },
+          payments: redistributed,
           createdAt: serverTimestamp()
         });
       }
@@ -472,20 +620,20 @@ function AppContent() {
         if (existingNames.has(lowerName)) {
           const existingMember = existingNames.get(lowerName)!;
           const docRef = doc(db, 'members', existingMember.id);
-          const existingYearPayments = existingMember.payments[currentYear] || createEmptyYear();
-          const mergedYearPayments = { ...existingYearPayments };
-          MONTHS.forEach(m => {
-            if (yearPayments[m] !== '') mergedYearPayments[m] = yearPayments[m];
-          });
+          
+          const allPayments = { ...existingMember.payments, [currentYear]: yearPayments };
+          const redistributed = redistributePayments(allPayments);
+          
           batch.update(docRef, {
-            [`payments.${currentYear}`]: mergedYearPayments
+            payments: redistributed
           });
         } else {
           const code = generateCode();
           const docRef = doc(db, 'members', code);
+          const redistributed = redistributePayments({ [currentYear]: yearPayments });
           batch.set(docRef, {
             name: cleanName,
-            payments: { [currentYear]: yearPayments },
+            payments: redistributed,
             createdAt: serverTimestamp()
           });
         }
@@ -501,8 +649,25 @@ function AppContent() {
   };
 
   const calculateTotal = (payments: Record<number, Record<Month, number | ''>>, year: number): number => {
+    // For "debt-first" logic, the total for a year is only what's allocated to that year
     const yearPayments = payments[year] || createEmptyYear();
     return Object.values(yearPayments).reduce<number>((sum, val) => sum + (typeof val === 'number' ? val : 0), 0);
+  };
+
+  const calculateGlobalDebt = (payments: Record<number, Record<Month, number | ''>>, targetYear: number) => {
+    let totalPaid = 0;
+    Object.values(payments).forEach(yearData => {
+      Object.values(yearData).forEach(val => {
+        if (typeof val === 'number') totalPaid += val;
+      });
+    });
+
+    const yearsCount = targetYear - 2025 + 1;
+    const totalOwed = yearsCount * ANNUAL_TARGET;
+    const globalReste = Math.max(0, totalOwed - totalPaid);
+    const isUpToDate = totalPaid >= totalOwed;
+
+    return { totalPaid, totalOwed, globalReste, isUpToDate };
   };
 
   const stats = useMemo(() => {
@@ -510,9 +675,11 @@ function AppContent() {
     let upToDateCount = 0;
 
     members.forEach(member => {
-      const total = calculateTotal(member.payments, currentYear);
-      totalCollected += total;
-      if (total >= ANNUAL_TARGET) {
+      const { totalPaid, isUpToDate } = calculateGlobalDebt(member.payments, currentYear);
+      // For global stats, we might want to show total collected for the current year only or global
+      // Let's show total collected for the current year specifically to keep dashboard relevant
+      totalCollected += calculateTotal(member.payments, currentYear);
+      if (isUpToDate) {
         upToDateCount++;
       }
     });
@@ -532,10 +699,10 @@ function AppContent() {
     
     if (previousAmount === numValue) return;
 
-    const newPayments = {
+    const newPayments = redistributePayments({
       ...member.payments,
       [year]: { ...yearData, [month]: numValue }
-    };
+    });
 
     const newTransaction: Transaction = {
       id: Date.now().toString() + Math.random().toString(36).substring(2, 9),
@@ -690,10 +857,11 @@ function AppContent() {
 
           <button 
             onClick={handleAdminLogin}
-            className="w-full flex items-center justify-center gap-3 bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 rounded-xl transition-all shadow-lg"
+            disabled={isLoggingIn}
+            className="w-full flex items-center justify-center gap-3 bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 rounded-xl transition-all shadow-lg disabled:opacity-50"
           >
-            <LogIn className="w-5 h-5" />
-            Connexion Administrateur
+            {isLoggingIn ? <Loader2 className="w-5 h-5 animate-spin" /> : <LogIn className="w-5 h-5" />}
+            {isLoggingIn ? 'Connexion en cours...' : 'Connexion Administrateur'}
           </button>
 
           {showInstallBtn && (
@@ -715,9 +883,7 @@ function AppContent() {
 
   // Member View
   if (userRole === 'member' && memberData) {
-    const total = calculateTotal(memberData.payments, currentYear);
-    const reste = Math.max(0, ANNUAL_TARGET - total);
-    const isUpToDate = total >= ANNUAL_TARGET;
+    const { totalPaid, globalReste, isUpToDate } = calculateGlobalDebt(memberData.payments, currentYear);
     const yearPayments = memberData.payments[currentYear] || createEmptyYear();
 
     return (
@@ -759,17 +925,48 @@ function AppContent() {
 
               <div className="flex gap-4">
                 <div className="text-center px-6 py-3 bg-orange-50 rounded-xl border border-orange-200">
-                  <p className="text-sm text-degha-orange font-bold">Total Payé</p>
-                  <p className="text-xl font-black text-slate-900">{total.toLocaleString()} FCFA</p>
+                  <p className="text-sm text-degha-orange font-bold">Total Payé (Global)</p>
+                  <p className="text-xl font-black text-slate-900">{totalPaid.toLocaleString()} FCFA</p>
                 </div>
                 <div className="text-center px-6 py-3 bg-green-50 rounded-xl border border-green-200">
-                  <p className="text-sm text-degha-green font-bold">Reste à payer</p>
-                  <p className={`text-xl font-black ${reste > 0 ? 'text-rose-600' : 'text-degha-green'}`}>
-                    {reste > 0 ? reste.toLocaleString() : '0'} FCFA
+                  <p className="text-sm text-degha-green font-bold">Reste à payer (Dette)</p>
+                  <p className={`text-xl font-black ${globalReste > 0 ? 'text-rose-600' : 'text-degha-green'}`}>
+                    {globalReste > 0 ? globalReste.toLocaleString() : '0'} FCFA
                   </p>
                 </div>
               </div>
           </div>
+
+          {/* Message d'explication sur la dette */}
+          {currentYear > 2025 && (() => {
+            const paidBeforeCurrent = Object.keys(memberData.payments)
+              .filter(y => Number(y) < currentYear)
+              .reduce((sum, y) => sum + calculateTotal(memberData.payments, Number(y)), 0);
+            const owedBeforeCurrent = (currentYear - 2025) * ANNUAL_TARGET;
+            const debtFromPast = Math.max(0, owedBeforeCurrent - paidBeforeCurrent);
+            
+            if (debtFromPast > 0) {
+              return (
+                <motion.div 
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-xl"
+                >
+                  <div className="flex gap-3">
+                    <AlertCircle className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-bold text-blue-900">Note sur vos cotisations</p>
+                      <p className="text-sm text-blue-800 mt-1">
+                        Vous aviez un retard de <span className="font-bold">{debtFromPast.toLocaleString()} FCFA</span> sur les années précédentes. 
+                        Vos derniers versements ont été prioritairement utilisés pour solder cette dette avant de compter pour l'année {currentYear}.
+                      </p>
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            }
+            return null;
+          })()}
 
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="p-4 border-b border-slate-200 bg-slate-50/50 flex justify-between items-center">
@@ -852,6 +1049,17 @@ function AppContent() {
             </div>
           )}
         </AnimatePresence>
+
+        {/* Floating Action Button for Export */}
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={exportToExcel}
+          className="fixed bottom-8 right-8 z-50 bg-blue-600 text-white p-4 rounded-2xl shadow-2xl flex items-center gap-3 font-black uppercase tracking-wider hover:bg-blue-700 transition-colors border-4 border-white"
+        >
+          <Download className="w-6 h-6" />
+          <span>Exporter vers Excel</span>
+        </motion.button>
       </div>
     );
   }
@@ -875,6 +1083,7 @@ function AppContent() {
             </div>
             <div className="flex flex-wrap items-center gap-4">
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">Cotisations Mensuelles</h1>
+              <span className="text-[10px] bg-slate-100 text-slate-400 px-2 py-1 rounded-md font-mono">v6.0</span>
               <div className="flex items-center gap-2 bg-slate-50 px-4 py-2 rounded-xl border border-slate-200">
                 <Calendar className="w-5 h-5 text-slate-500" />
                 <select 
@@ -891,6 +1100,15 @@ function AppContent() {
             <p className="text-slate-500 font-medium mt-1">WELARA • Objectif: {ANNUAL_TARGET.toLocaleString()} FCFA/membre</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            <button 
+              type="button"
+              onClick={syncWithGoogleSheets}
+              disabled={isSyncing}
+              className="bg-degha-green hover:bg-white text-white hover:text-degha-green px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-bold transition-all disabled:opacity-50 cursor-pointer border border-transparent hover:border-degha-green shadow-md"
+            >
+              {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              {isSyncing ? 'Synchronisation...' : 'Sync Google Sheet'}
+            </button>
             <div className="flex items-center gap-2 mr-2">
               <input
                 type="file"

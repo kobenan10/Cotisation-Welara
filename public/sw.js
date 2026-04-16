@@ -1,4 +1,4 @@
-const CACHE_NAME = 'degha-v2';
+const CACHE_NAME = 'degha-v6';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
