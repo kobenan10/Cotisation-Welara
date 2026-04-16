@@ -998,7 +998,7 @@ function AppContent() {
             </div>
             <div className="flex flex-wrap items-center gap-4">
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">Cotisations Mensuelles</h1>
-              <span className="text-[10px] bg-blue-100 text-blue-600 px-2 py-1 rounded-md font-mono font-bold animate-pulse">v7.0 - À JOUR</span>
+              <span className="text-[10px] bg-purple-600 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v7.6 - MISE À JOUR</span>
               <button 
                 onClick={() => {
                   if (confirm("Voulez-vous forcer le nettoyage du cache et recharger la page ?")) {
@@ -1049,6 +1049,16 @@ function AppContent() {
                 {isImporting ? 'Importation...' : 'Importer'}
               </button>
             </div>
+            
+            <button 
+              type="button"
+              onClick={exportToExcel}
+              className="bg-degha-orange hover:bg-white text-white hover:text-degha-orange px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-bold transition-all cursor-pointer border border-transparent hover:border-degha-orange shadow-sm"
+            >
+              <Download className="w-4 h-4" />
+              Exporter vers Excel
+            </button>
+
             <form onSubmit={handleAddMember} className="flex items-center gap-2">
               <input
                 type="text"
