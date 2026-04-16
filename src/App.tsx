@@ -141,6 +141,45 @@ const stopSpeaking = () => {
   }
 };
 
+const PaymentCell = ({ 
+  initialValue, 
+  onSave 
+}: { 
+  initialValue: number | '', 
+  onSave: (val: string) => void 
+}) => {
+  const [localValue, setLocalValue] = useState<string>(initialValue.toString());
+
+  useEffect(() => {
+    setLocalValue(initialValue.toString());
+  }, [initialValue]);
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      value={localValue === '' ? '' : localValue}
+      onChange={(e) => {
+        const val = e.target.value.replace(/[^0-9]/g, '');
+        setLocalValue(val);
+      }}
+      onBlur={() => {
+        if (localValue !== initialValue.toString()) {
+          onSave(localValue);
+        }
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      className="w-16 p-1.5 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-degha-green focus:border-degha-green text-center text-slate-700 bg-white shadow-inner transition-all duration-300"
+      placeholder="0"
+    />
+  );
+};
+
 interface ErrorBoundaryProps {
   children: React.ReactNode;
 }
@@ -614,10 +653,10 @@ function AppContent() {
     
     if (previousAmount === numValue) return;
 
-    const newPayments = redistributePayments({
+    const newPayments = {
       ...member.payments,
       [year]: { ...yearData, [month]: numValue }
-    });
+    };
 
     const newTransaction: Transaction = {
       id: Date.now().toString() + Math.random().toString(36).substring(2, 9),
@@ -998,7 +1037,7 @@ function AppContent() {
             </div>
             <div className="flex flex-wrap items-center gap-4">
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">Cotisations Mensuelles</h1>
-              <span className="text-[10px] bg-purple-600 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v7.6 - MISE À JOUR</span>
+              <span className="text-[10px] bg-emerald-600 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v7.7 - SAISIE CORRIGÉE</span>
               <button 
                 onClick={() => {
                   if (confirm("Voulez-vous forcer le nettoyage du cache et recharger la page ?")) {
@@ -1050,6 +1089,26 @@ function AppContent() {
               </button>
             </div>
             
+            <button 
+              type="button"
+              onClick={async () => {
+                if (confirm("Voulez-vous réorganiser TOUS les paiements de ce membre pour combler les retards chronologiquement ?")) {
+                  const batch = writeBatch(db);
+                  members.forEach(m => {
+                    const redistributed = redistributePayments(m.payments);
+                    batch.update(doc(db, 'members', m.id), { payments: redistributed });
+                  });
+                  await batch.commit();
+                  alert("Paiements réorganisés avec succès !");
+                }
+              }}
+              className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-bold transition-all cursor-pointer border border-slate-300 shadow-sm"
+              title="Réorganiser les paiements pour combler les mois vides dans l'ordre"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Réorganiser
+            </button>
+
             <button 
               type="button"
               onClick={exportToExcel}
@@ -1209,14 +1268,9 @@ function AppContent() {
                         </td>
                         {MONTHS.map(m => (
                           <td key={m} className="px-2 py-3 whitespace-nowrap">
-                            <input
-                              type="number"
-                              min="0"
-                              step="500"
-                              value={yearPayments[m]}
-                              onChange={(e) => handlePaymentChange(member.id, currentYear, m, e.target.value)}
-                              className="w-16 p-1.5 text-sm border border-slate-200 rounded-md focus:ring-2 focus:ring-degha-green focus:border-degha-green text-center text-slate-700 bg-transparent hover:bg-white transition-all duration-300"
-                              placeholder="0"
+                            <PaymentCell
+                              initialValue={yearPayments[m]}
+                              onSave={(val) => handlePaymentChange(member.id, currentYear, m, val)}
                             />
                           </td>
                         ))}
