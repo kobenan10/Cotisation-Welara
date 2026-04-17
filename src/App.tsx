@@ -141,6 +141,58 @@ const stopSpeaking = () => {
   }
 };
 
+const getPaymentBreakdown = (member: Member, year: number, month: Month) => {
+  const amount = member.payments[year]?.[month];
+  if (typeof amount !== 'number' || amount <= 0) return null;
+
+  const currentMonthIndex = MONTHS.indexOf(month);
+
+  // 1. Calculate cumulative expected up to the START of the current month
+  let cumulativeOwedAtStart = 0;
+  for (const y of YEARS) {
+    if (y < year) {
+      cumulativeOwedAtStart += ANNUAL_TARGET;
+    } else if (y === year) {
+      cumulativeOwedAtStart += currentMonthIndex * MONTHLY_DUE;
+      break;
+    }
+  }
+
+  // 2. Calculate cumulative paid up to the START of the current month
+  let cumulativePaidAtStart = 0;
+  for (const y of YEARS) {
+    if (y > year) break;
+    for (const m of MONTHS) {
+      const idx = MONTHS.indexOf(m);
+      if (y < year || (y === year && idx < currentMonthIndex)) {
+        const p = member.payments[y]?.[m];
+        if (typeof p === 'number') cumulativePaidAtStart += p;
+      } else {
+        break;
+      }
+    }
+  }
+
+  // 3. Current debt at start of this month
+  const totalDebtAtStart = Math.max(0, cumulativeOwedAtStart - cumulativePaidAtStart);
+  if (totalDebtAtStart <= 0) return null;
+
+  const recoveryAmount = Math.min(amount, totalDebtAtStart);
+  
+  // 4. Identify which year is being recovered
+  let recoveredYear = 2025;
+  let runningTotal = 0;
+  for (const y of YEARS) {
+    runningTotal += ANNUAL_TARGET;
+    if (runningTotal > cumulativePaidAtStart) {
+      recoveredYear = y;
+      break;
+    }
+  }
+
+  return { recoveryAmount, recoveredYear };
+};
+
 const PaymentCell = ({ 
   initialValue, 
   onSave 
@@ -466,18 +518,17 @@ function AppContent() {
         const docRef = doc(db, 'members', existingMember.id);
         
         const allPayments = { ...existingMember.payments, [currentYear]: yearPayments };
-        const redistributed = redistributePayments(allPayments);
-        
+        // Removed redistribution to maintain fidelity to the source file
         batch.update(docRef, {
-          payments: redistributed
+          payments: allPayments
         });
       } else {
         const code = generateCode();
         const docRef = doc(db, 'members', code);
-        const redistributed = redistributePayments({ [currentYear]: yearPayments });
+        // Removed redistribution to maintain fidelity to the source file
         batch.set(docRef, {
           name: cleanName,
-          payments: redistributed,
+          payments: { [currentYear]: yearPayments },
           createdAt: serverTimestamp()
         });
       }
@@ -576,18 +627,17 @@ function AppContent() {
           const docRef = doc(db, 'members', existingMember.id);
           
           const allPayments = { ...existingMember.payments, [currentYear]: yearPayments };
-          const redistributed = redistributePayments(allPayments);
-          
+          // Removed redistribution to maintain fidelity to the source file
           batch.update(docRef, {
-            payments: redistributed
+            payments: allPayments
           });
         } else {
           const code = generateCode();
           const docRef = doc(db, 'members', code);
-          const redistributed = redistributePayments({ [currentYear]: yearPayments });
+          // Removed redistribution (keeps exact amounts in exact months)
           batch.set(docRef, {
             name: cleanName,
-            payments: redistributed,
+            payments: { [currentYear]: yearPayments },
             createdAt: serverTimestamp()
           });
         }
@@ -629,11 +679,9 @@ function AppContent() {
     let upToDateCount = 0;
 
     members.forEach(member => {
-      const { totalPaid, isUpToDate } = calculateGlobalDebt(member.payments, currentYear);
-      // For global stats, we might want to show total collected for the current year only or global
-      // Let's show total collected for the current year specifically to keep dashboard relevant
-      totalCollected += calculateTotal(member.payments, currentYear);
-      if (isUpToDate) {
+      const yearTotal = calculateTotal(member.payments, currentYear);
+      totalCollected += yearTotal;
+      if (yearTotal >= ANNUAL_TARGET) {
         upToDateCount++;
       }
     });
@@ -1037,7 +1085,7 @@ function AppContent() {
             </div>
             <div className="flex flex-wrap items-center gap-4">
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">Cotisations Mensuelles</h1>
-              <span className="text-[10px] bg-emerald-600 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v7.7 - SAISIE CORRIGÉE</span>
+              <span className="text-[10px] bg-indigo-900 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v8.4 - IMPORT UNIVERSEL</span>
               <button 
                 onClick={() => {
                   if (confirm("Voulez-vous forcer le nettoyage du cache et recharger la page ?")) {
@@ -1116,6 +1164,35 @@ function AppContent() {
             >
               <Download className="w-4 h-4" />
               Exporter vers Excel
+            </button>
+
+            <button 
+              type="button"
+              onClick={async () => {
+                if (confirm("⚠️ ATTENTION : Cette action va effacer TOUS les paiements et TOUT l'historique de TOUS les membres. Cette commande est irréversible.\n\nVoulez-vous continuer ?")) {
+                  if (confirm("Êtes-vous ABSOLUMENT sûr ?\nTous les compteurs (Total Collecté, Membres à jour) reviendront à zéro.")) {
+                    try {
+                      const batch = writeBatch(db);
+                      members.forEach(m => {
+                        batch.update(doc(db, 'members', m.id), { 
+                          payments: {},
+                          history: []
+                        });
+                      });
+                      await batch.commit();
+                      alert("Toutes les données de paiement et d'historique ont été remises à zéro.");
+                    } catch (error) {
+                      console.error("Erreur lors du reset:", error);
+                      alert("Une erreur est survenue lors de la réinitialisation.");
+                    }
+                  }
+                }
+              }}
+              className="bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-bold transition-all cursor-pointer border border-rose-200 hover:border-rose-600 shadow-sm"
+              title="Remettre tous les compteurs à zéro"
+            >
+              <Trash2 className="w-4 h-4" />
+              Remise à Zéro
             </button>
 
             <form onSubmit={handleAddMember} className="flex items-center gap-2">
@@ -1266,14 +1343,26 @@ function AppContent() {
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-center font-mono font-bold text-slate-500 bg-slate-50/30">
                           {member.id}
                         </td>
-                        {MONTHS.map(m => (
-                          <td key={m} className="px-2 py-3 whitespace-nowrap">
-                            <PaymentCell
-                              initialValue={yearPayments[m]}
-                              onSave={(val) => handlePaymentChange(member.id, currentYear, m, val)}
-                            />
-                          </td>
-                        ))}
+                        {MONTHS.map(m => {
+                          const breakdown = getPaymentBreakdown(member, currentYear, m);
+                          return (
+                            <td key={m} className="px-2 py-3 whitespace-nowrap text-center">
+                              <PaymentCell
+                                initialValue={yearPayments[m]}
+                                onSave={(val) => handlePaymentChange(member.id, currentYear, m, val)}
+                              />
+                              {breakdown && (
+                                <div className="mt-1 text-[9px] font-bold text-rose-500 leading-none">
+                                  {breakdown.recoveredYear < currentYear ? (
+                                    <span>→ {breakdown.recoveredYear}</span>
+                                  ) : (
+                                    <span>Rattrap.</span>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-center font-bold text-slate-700 bg-slate-50/30 group-hover:bg-orange-50/20 transition-colors duration-300">
                           {total.toLocaleString()}
                         </td>
