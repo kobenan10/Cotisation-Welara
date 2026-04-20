@@ -63,12 +63,24 @@ type Month = 'JAN' | 'FEV' | 'MARS' | 'AVRIL' | 'MAI' | 'JUIN' | 'JUILL' | 'AOUT
 
 const MONTHS: Month[] = ['JAN', 'FEV', 'MARS', 'AVRIL', 'MAI', 'JUIN', 'JUILL', 'AOUT', 'SEP', 'OCT', 'NOV', 'DEC'];
 const YEARS = [2025, 2026, 2027, 2028, 2029, 2030];
-const ANNUAL_TARGET = 6000;
-const MONTHLY_DUE = 500;
+
+type MemberCategory = 'Adhérent' | 'Cadre';
+
+const CATEGORY_ANNUAL_TARGET: Record<MemberCategory, number> = {
+  'Adhérent': 6000,
+  'Cadre': 12000
+};
+
+const CATEGORY_MONTHLY_DUE: Record<MemberCategory, number> = {
+  'Adhérent': 500,
+  'Cadre': 1000
+};
 
 const createEmptyYear = () => MONTHS.reduce((acc, month) => ({ ...acc, [month]: '' }), {} as Record<Month, number | ''>);
 
-const redistributePayments = (allPayments: Record<number, Record<Month, number | ''>>) => {
+const redistributePayments = (allPayments: Record<number, Record<Month, number | ''>>, category: MemberCategory = 'Adhérent') => {
+  const monthlyDue = CATEGORY_MONTHLY_DUE[category];
+  
   // 1. Calculate total sum of all payments across all years
   let totalSum = 0;
   Object.values(allPayments).forEach(yearData => {
@@ -88,7 +100,7 @@ const redistributePayments = (allPayments: Record<number, Record<Month, number |
   for (const year of YEARS) {
     for (const month of MONTHS) {
       if (remaining <= 0) break;
-      const amountToFill = Math.min(remaining, MONTHLY_DUE);
+      const amountToFill = Math.min(remaining, monthlyDue);
       newPayments[year][month] = amountToFill;
       remaining -= amountToFill;
     }
@@ -110,6 +122,7 @@ interface Transaction {
 interface Member {
   id: string; // This is the personal code
   name: string;
+  category?: MemberCategory;
   payments: Record<number, Record<Month, number | ''>>;
   createdAt?: any;
   history?: Transaction[];
@@ -145,15 +158,19 @@ const getPaymentBreakdown = (member: Member, year: number, month: Month) => {
   const amount = member.payments[year]?.[month];
   if (typeof amount !== 'number' || amount <= 0) return null;
 
+  const category = member.category || 'Adhérent';
+  const annualTarget = CATEGORY_ANNUAL_TARGET[category];
+  const monthlyDue = CATEGORY_MONTHLY_DUE[category];
+
   const currentMonthIndex = MONTHS.indexOf(month);
 
   // 1. Calculate cumulative expected up to the START of the current month
   let cumulativeOwedAtStart = 0;
   for (const y of YEARS) {
     if (y < year) {
-      cumulativeOwedAtStart += ANNUAL_TARGET;
+      cumulativeOwedAtStart += annualTarget;
     } else if (y === year) {
-      cumulativeOwedAtStart += currentMonthIndex * MONTHLY_DUE;
+      cumulativeOwedAtStart += currentMonthIndex * monthlyDue;
       break;
     }
   }
@@ -183,7 +200,7 @@ const getPaymentBreakdown = (member: Member, year: number, month: Month) => {
   let recoveredYear = 2025;
   let runningTotal = 0;
   for (const y of YEARS) {
-    runningTotal += ANNUAL_TARGET;
+    runningTotal += annualTarget;
     if (runningTotal > cumulativePaidAtStart) {
       recoveredYear = y;
       break;
@@ -303,6 +320,7 @@ function AppContent() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'UP_TO_DATE' | 'LATE'>('ALL');
   const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberCategory, setNewMemberCategory] = useState<MemberCategory>('Adhérent');
   const [isImporting, setIsImporting] = useState(false);
   const [currentYear, setCurrentYear] = useState<number>(new Date().getFullYear() >= 2025 && new Date().getFullYear() <= 2030 ? new Date().getFullYear() : 2025);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -658,7 +676,7 @@ function AppContent() {
     return Object.values(yearPayments).reduce<number>((sum, val) => sum + (typeof val === 'number' ? val : 0), 0);
   };
 
-  const calculateGlobalDebt = (payments: Record<number, Record<Month, number | ''>>, targetYear: number) => {
+  const calculateGlobalDebt = (payments: Record<number, Record<Month, number | ''>>, targetYear: number, category: MemberCategory = 'Adhérent') => {
     let totalPaid = 0;
     Object.values(payments).forEach(yearData => {
       Object.values(yearData).forEach(val => {
@@ -666,8 +684,9 @@ function AppContent() {
       });
     });
 
+    const annualTarget = CATEGORY_ANNUAL_TARGET[category];
     const yearsCount = targetYear - 2025 + 1;
-    const totalOwed = yearsCount * ANNUAL_TARGET;
+    const totalOwed = yearsCount * annualTarget;
     const globalReste = Math.max(0, totalOwed - totalPaid);
     const isUpToDate = totalPaid >= totalOwed;
 
@@ -681,7 +700,8 @@ function AppContent() {
     members.forEach(member => {
       const yearTotal = calculateTotal(member.payments, currentYear);
       totalCollected += yearTotal;
-      if (yearTotal >= ANNUAL_TARGET) {
+      const annualTarget = CATEGORY_ANNUAL_TARGET[member.category || 'Adhérent'];
+      if (yearTotal >= annualTarget) {
         upToDateCount++;
       }
     });
@@ -742,10 +762,12 @@ function AppContent() {
     try {
       await setDoc(doc(db, 'members', code), {
         name: cleanName,
+        category: newMemberCategory,
         payments: {},
         createdAt: serverTimestamp()
       });
       setNewMemberName('');
+      setNewMemberCategory('Adhérent');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `members/${code}`);
     }
@@ -759,14 +781,23 @@ function AppContent() {
     }
   };
 
+  const handleCategoryChange = async (memberId: string, category: MemberCategory) => {
+    try {
+      await updateDoc(doc(db, 'members', memberId), { category });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `members/${memberId}`);
+    }
+  };
+
   const filteredMembers = members.filter(m => {
     const matchesSearch = m.name.toLowerCase().includes(searchTerm.toLowerCase());
     if (!matchesSearch) return false;
     
     if (statusFilter === 'ALL') return true;
     
+    const annualTarget = CATEGORY_ANNUAL_TARGET[m.category || 'Adhérent'];
     const total = calculateTotal(m.payments, currentYear);
-    const isUpToDate = total >= ANNUAL_TARGET;
+    const isUpToDate = total >= annualTarget;
     
     if (statusFilter === 'UP_TO_DATE') return isUpToDate;
     if (statusFilter === 'LATE') return !isUpToDate;
@@ -885,8 +916,9 @@ function AppContent() {
 
   // Member View
   if (userRole === 'member' && memberData) {
-    const { totalPaid, globalReste, isUpToDate } = calculateGlobalDebt(memberData.payments, currentYear);
+    const { totalPaid, globalReste, isUpToDate } = calculateGlobalDebt(memberData.payments, currentYear, memberData.category);
     const yearPayments = memberData.payments[currentYear] || createEmptyYear();
+    const annualTarget = CATEGORY_ANNUAL_TARGET[memberData.category || 'Adhérent'];
 
     return (
       <div className="min-h-screen bg-white p-4 md:p-8 relative">
@@ -903,7 +935,7 @@ function AppContent() {
                 <div className="h-px w-8 bg-degha-orange"></div>
               </div>
               <h1 className="text-3xl font-black text-slate-900">Bonjour, {memberData.name}</h1>
-              <p className="text-slate-500 font-medium mt-1">WELARA • Votre situation de cotisation</p>
+              <p className="text-slate-500 font-medium mt-1">WELARA • Votre situation ({memberData.category || 'Adhérent'})</p>
             </div>
             <button onClick={handleLogout} className="relative z-10 text-slate-600 hover:text-degha-green flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 hover:bg-white transition-all border border-slate-200 hover:border-degha-green shadow-sm">
               <LogOut className="w-4 h-4" />
@@ -941,10 +973,13 @@ function AppContent() {
 
           {/* Message d'explication sur la dette */}
           {currentYear > 2025 && (() => {
+            const memberCategory = memberData.category || 'Adhérent';
+            const annualTarget = CATEGORY_ANNUAL_TARGET[memberCategory];
+
             const paidBeforeCurrent = Object.keys(memberData.payments)
               .filter(y => Number(y) < currentYear)
               .reduce((sum, y) => sum + calculateTotal(memberData.payments, Number(y)), 0);
-            const owedBeforeCurrent = (currentYear - 2025) * ANNUAL_TARGET;
+            const owedBeforeCurrent = (currentYear - 2025) * annualTarget;
             const debtFromPast = Math.max(0, owedBeforeCurrent - paidBeforeCurrent);
             
             if (debtFromPast > 0) {
@@ -1085,7 +1120,7 @@ function AppContent() {
             </div>
             <div className="flex flex-wrap items-center gap-4">
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">Cotisations Mensuelles</h1>
-              <span className="text-[10px] bg-indigo-900 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v8.4 - IMPORT UNIVERSEL</span>
+              <span className="text-[10px] bg-purple-900 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v8.5 - CATÉGORIES MEMBRES</span>
               <button 
                 onClick={() => {
                   if (confirm("Voulez-vous forcer le nettoyage du cache et recharger la page ?")) {
@@ -1115,7 +1150,7 @@ function AppContent() {
                 </select>
               </div>
             </div>
-            <p className="text-slate-500 font-medium mt-1">WELARA • Objectif: {ANNUAL_TARGET.toLocaleString()} FCFA/membre</p>
+            <p className="text-slate-500 font-medium mt-1">WELARA • Objectif: 6 000 (Adhérent) - 12 000 (Cadre) FCFA/membre</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2 mr-2">
@@ -1203,6 +1238,14 @@ function AppContent() {
                 onChange={(e) => setNewMemberName(e.target.value)}
                 className="px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm w-48 bg-white"
               />
+              <select
+                value={newMemberCategory}
+                onChange={(e) => setNewMemberCategory(e.target.value as MemberCategory)}
+                className="px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm bg-white cursor-pointer"
+              >
+                <option value="Adhérent">Adhérent</option>
+                <option value="Cadre">Cadre</option>
+              </select>
               <button 
                 type="submit"
                 className="bg-degha-green hover:bg-white text-white hover:text-degha-green px-4 py-2 rounded-lg flex items-center gap-1 text-sm font-bold transition-all border border-transparent hover:border-degha-green cursor-pointer shadow-sm"
@@ -1292,6 +1335,9 @@ function AppContent() {
                     Nom & Prénoms
                   </th>
                   <th scope="col" className="px-4 py-3 text-center text-xs font-semibold text-slate-600 uppercase tracking-wider bg-slate-50">
+                    Catégorie
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-center text-xs font-semibold text-slate-600 uppercase tracking-wider bg-slate-50">
                     Code d'accès
                   </th>
                   {MONTHS.map(m => (
@@ -1317,9 +1363,10 @@ function AppContent() {
                 <AnimatePresence mode="popLayout">
                 {filteredMembers.length > 0 ? (
                   filteredMembers.map((member, index) => {
+                    const annualTarget = CATEGORY_ANNUAL_TARGET[member.category || 'Adhérent'];
                     const total = calculateTotal(member.payments, currentYear);
-                    const reste = Math.max(0, ANNUAL_TARGET - total);
-                    const isUpToDate = total >= ANNUAL_TARGET;
+                    const reste = Math.max(0, annualTarget - total);
+                    const isUpToDate = total >= annualTarget;
                     const yearPayments = member.payments[currentYear] || createEmptyYear();
 
                     return (
@@ -1339,6 +1386,20 @@ function AppContent() {
                         >
                           <div className="absolute left-0 top-0 bottom-0 w-1 bg-degha-orange scale-y-0 group-hover:scale-y-100 transition-transform duration-300 ease-in-out origin-center" />
                           {member.name}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-center bg-slate-50/30 group-hover:bg-orange-50/20 transition-colors duration-300">
+                          <select
+                            value={member.category || 'Adhérent'}
+                            onChange={(e) => handleCategoryChange(member.id, e.target.value as MemberCategory)}
+                            className={`text-xs font-bold px-2 py-1 rounded-md border outline-none cursor-pointer transition-all ${
+                              (member.category || 'Adhérent') === 'Cadre' 
+                                ? 'bg-indigo-50 text-indigo-700 border-indigo-200' 
+                                : 'bg-slate-50 text-slate-700 border-slate-200'
+                            }`}
+                          >
+                            <option value="Adhérent">Adhérent</option>
+                            <option value="Cadre">Cadre</option>
+                          </select>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-center font-mono font-bold text-slate-500 bg-slate-50/30">
                           {member.id}
@@ -1404,7 +1465,7 @@ function AppContent() {
                   })
                 ) : (
                   <motion.tr initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                    <td colSpan={18} className="px-4 py-8 text-center text-slate-500 text-sm">
+                    <td colSpan={19} className="px-4 py-8 text-center text-slate-500 text-sm">
                       Aucun membre trouvé.
                     </td>
                   </motion.tr>
