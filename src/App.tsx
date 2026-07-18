@@ -1559,10 +1559,10 @@ function AppContent() {
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex border-b border-slate-200 gap-4">
+        <div className="flex overflow-x-auto whitespace-nowrap border-b border-slate-200 gap-2 sm:gap-4 pb-1">
           <button
             onClick={() => setActiveAdminTab('members')}
-            className={`px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
               activeAdminTab === 'members'
                 ? 'border-degha-orange text-degha-orange bg-orange-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -1573,7 +1573,7 @@ function AppContent() {
           </button>
           <button
             onClick={() => setActiveAdminTab('revenues')}
-            className={`px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
               activeAdminTab === 'revenues'
                 ? 'border-degha-orange text-degha-orange bg-orange-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -1584,7 +1584,7 @@ function AppContent() {
           </button>
           <button
             onClick={() => setActiveAdminTab('expenses')}
-            className={`px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+            className={`px-3 sm:px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer shrink-0 ${
               activeAdminTab === 'expenses'
                 ? 'border-degha-orange text-degha-orange bg-orange-50/10'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
