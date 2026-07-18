@@ -24,6 +24,34 @@
         }
       },
       "required": ["name", "payments", "createdAt"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "An expense of the association",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Description of the expense"
+        },
+        "amount": {
+          "type": "number",
+          "description": "Amount of the expense"
+        },
+        "month": {
+          "type": "string",
+          "description": "Month of the expense"
+        },
+        "year": {
+          "type": "number",
+          "description": "Year of the expense"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["description", "amount", "month", "year", "createdAt"]
     }
   },
   "firestore": {
@@ -32,6 +60,12 @@
         "$ref": "#/entities/Member"
       },
       "description": "Members collection where the document ID is the personal access code"
+    },
+    "/expenses/{expenseId}": {
+      "schema": {
+        "$ref": "#/entities/Expense"
+      },
+      "description": "Expenses collection"
     }
   }
 }

@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, Component } from 'react';
 import Papa from 'papaparse';
-import { CheckCircle, AlertCircle, Users, Wallet, Plus, Search, Upload, Loader2, Calendar, LogIn, Key, LogOut, Trash2, Filter, Clock, X, Download, RefreshCw } from 'lucide-react';
+import { CheckCircle, AlertCircle, Users, Wallet, Plus, Search, Upload, Loader2, Calendar, LogIn, Key, LogOut, Trash2, Filter, Clock, X, Download, RefreshCw, TrendingDown, DollarSign } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { GoogleGenAI, Type } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, db, googleProvider } from './firebase';
 import { signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
@@ -126,6 +125,15 @@ interface Member {
   payments: Record<number, Record<Month, number | ''>>;
   createdAt?: any;
   history?: Transaction[];
+}
+
+interface Expense {
+  id: string;
+  description: string;
+  amount: number;
+  month: Month;
+  year: number;
+  createdAt: any;
 }
 
 const generateCode = () => {
@@ -326,6 +334,15 @@ function AppContent() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [historyModalMember, setHistoryModalMember] = useState<Member | null>(null);
 
+  // Expenses State
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [expenseDesc, setExpenseDesc] = useState('');
+  const [expenseAmount, setExpenseAmount] = useState('');
+  const [expenseMonth, setExpenseMonth] = useState<Month>('JAN');
+  const [expenseYear, setExpenseYear] = useState<number>(new Date().getFullYear() >= 2025 && new Date().getFullYear() <= 2030 ? new Date().getFullYear() : 2025);
+  const [expenseFilterMonth, setExpenseFilterMonth] = useState<'ALL' | Month>('ALL');
+  const [activeAdminTab, setActiveAdminTab] = useState<'members' | 'expenses'>('members');
+
   // Auth State
   const [userRole, setUserRole] = useState<'admin' | 'member' | null>(null);
   const [adminUser, setAdminUser] = useState<User | null>(null);
@@ -400,6 +417,21 @@ function AppContent() {
         setMembers(membersData);
       }, (error) => {
         console.error("Erreur Firestore:", error);
+      });
+      return () => unsubscribe();
+    }
+  }, [userRole, isAuthReady]);
+
+  useEffect(() => {
+    if (userRole && isAuthReady) {
+      const unsubscribe = onSnapshot(collection(db, 'expenses'), (snapshot) => {
+        const expensesData: Expense[] = [];
+        snapshot.forEach((doc) => {
+          expensesData.push({ id: doc.id, ...doc.data() } as Expense);
+        });
+        setExpenses(expensesData);
+      }, (error) => {
+        console.error("Erreur Firestore (expenses):", error);
       });
       return () => unsubscribe();
     }
@@ -571,55 +603,20 @@ function AppContent() {
       reader.readAsDataURL(file);
     });
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("Clé API Gemini manquante");
-
-    const ai = new GoogleGenAI({ apiKey });
-    
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-pro-preview",
-      contents: [
-        {
-          inlineData: {
-            mimeType: "application/pdf",
-            data: base64
-          }
-        },
-        "Extrait les noms des membres et leurs cotisations mensuelles depuis ce document. Renvoie un tableau JSON d'objets. Chaque objet doit avoir un 'name' (chaîne de caractères) et un objet 'payments'. L'objet 'payments' doit avoir comme clés les mois : 'JAN', 'FEV', 'MARS', 'AVRIL', 'MAI', 'JUIN', 'JUILL', 'AOUT', 'SEP', 'OCT', 'NOV', 'DEC'. Les valeurs doivent être des nombres (le montant payé, mettez 0 si rien n'a été payé)."
-      ],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              payments: {
-                type: Type.OBJECT,
-                properties: {
-                  JAN: { type: Type.NUMBER },
-                  FEV: { type: Type.NUMBER },
-                  MARS: { type: Type.NUMBER },
-                  AVRIL: { type: Type.NUMBER },
-                  MAI: { type: Type.NUMBER },
-                  JUIN: { type: Type.NUMBER },
-                  JUILL: { type: Type.NUMBER },
-                  AOUT: { type: Type.NUMBER },
-                  SEP: { type: Type.NUMBER },
-                  OCT: { type: Type.NUMBER },
-                  NOV: { type: Type.NUMBER },
-                  DEC: { type: Type.NUMBER }
-                }
-              }
-            },
-            required: ["name", "payments"]
-          }
-        }
-      }
+    const serverRes = await fetch('/api/extract-pdf', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ base64 }),
     });
 
-    const jsonStr = response.text;
+    if (!serverRes.ok) {
+      const errorData = await serverRes.json();
+      throw new Error(errorData.error || "Erreur lors de l'extraction par Gemini.");
+    }
+
+    const { text: jsonStr } = await serverRes.json();
     if (jsonStr) {
       const parsed = JSON.parse(jsonStr);
       const batch = writeBatch(db);
@@ -706,8 +703,14 @@ function AppContent() {
       }
     });
 
-    return { totalCollected, upToDateCount };
-  }, [members, currentYear]);
+    const totalExpenses = expenses
+      .filter(exp => exp.year === currentYear)
+      .reduce((sum, exp) => sum + exp.amount, 0);
+
+    const netSolde = totalCollected - totalExpenses;
+
+    return { totalCollected, upToDateCount, totalExpenses, netSolde };
+  }, [members, expenses, currentYear]);
 
   const handlePaymentChange = async (memberId: string, year: number, month: Month, value: string) => {
     const numValue = value === '' ? '' : parseInt(value, 10);
@@ -789,6 +792,43 @@ function AppContent() {
     }
   };
 
+  const handleAddExpense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const desc = expenseDesc.trim();
+    if (!desc) return;
+    const amountNum = parseFloat(expenseAmount);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      alert("Veuillez saisir un montant valide supérieur à 0.");
+      return;
+    }
+
+    try {
+      const expenseId = Date.now().toString() + Math.random().toString(36).substring(2, 9);
+      await setDoc(doc(db, 'expenses', expenseId), {
+        description: desc,
+        amount: amountNum,
+        month: expenseMonth,
+        year: expenseYear,
+        createdAt: new Date().toISOString()
+      });
+      setExpenseDesc('');
+      setExpenseAmount('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `expenses`);
+      alert("Erreur lors de l'enregistrement de la dépense.");
+    }
+  };
+
+  const handleDeleteExpense = async (expenseId: string) => {
+    if (!confirm("Voulez-vous vraiment supprimer cette dépense ?")) return;
+    try {
+      await deleteDoc(doc(db, 'expenses', expenseId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `expenses/${expenseId}`);
+      alert("Erreur lors de la suppression.");
+    }
+  };
+
   const filteredMembers = members.filter(m => {
     const matchesSearch = m.name.toLowerCase().includes(searchTerm.toLowerCase());
     if (!matchesSearch) return false;
@@ -804,6 +844,56 @@ function AppContent() {
     
     return true;
   });
+
+  const monthlyTotals = useMemo(() => {
+    const totals = {} as Record<Month, number>;
+    MONTHS.forEach(m => {
+      totals[m] = 0;
+    });
+    filteredMembers.forEach(member => {
+      const yearPayments = member.payments[currentYear] || createEmptyYear();
+      MONTHS.forEach(m => {
+        const val = yearPayments[m];
+        if (typeof val === 'number') {
+          totals[m] += val;
+        }
+      });
+    });
+    return totals;
+  }, [filteredMembers, currentYear]);
+
+  const grandTotal = useMemo(() => {
+    return MONTHS.reduce((sum, m) => sum + (monthlyTotals[m] || 0), 0);
+  }, [monthlyTotals]);
+
+  const monthlyExpenses = useMemo(() => {
+    const totals = {} as Record<Month, number>;
+    MONTHS.forEach(m => {
+      totals[m] = 0;
+    });
+    expenses.forEach(exp => {
+      if (exp.year === currentYear) {
+        totals[exp.month] += exp.amount;
+      }
+    });
+    return totals;
+  }, [expenses, currentYear]);
+
+  const grandTotalExpenses = useMemo(() => {
+    return MONTHS.reduce((sum, m) => sum + (monthlyExpenses[m] || 0), 0);
+  }, [monthlyExpenses]);
+
+  const netBalance = useMemo(() => {
+    return grandTotal - grandTotalExpenses;
+  }, [grandTotal, grandTotalExpenses]);
+
+  const totalReste = useMemo(() => {
+    return filteredMembers.reduce((sum, member) => {
+      const annualTarget = CATEGORY_ANNUAL_TARGET[member.category || 'Adhérent'];
+      const total = calculateTotal(member.payments, currentYear);
+      return sum + Math.max(0, annualTarget - total);
+    }, 0);
+  }, [filteredMembers, currentYear]);
 
   if (!isAuthReady) {
     return (
@@ -1120,7 +1210,7 @@ function AppContent() {
             </div>
             <div className="flex flex-wrap items-center gap-4">
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">Cotisations Mensuelles</h1>
-              <span className="text-[10px] bg-purple-900 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v8.5 - CATÉGORIES MEMBRES</span>
+              <span className="text-[10px] bg-purple-900 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v8.6 - GESTION DES DÉPENSES</span>
               <button 
                 onClick={() => {
                   if (confirm("Voulez-vous forcer le nettoyage du cache et recharger la page ?")) {
@@ -1265,7 +1355,7 @@ function AppContent() {
         </header>
 
         {/* Dashboard Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-degha-orange flex items-center gap-4">
             <div className="p-3 bg-orange-50 text-degha-orange rounded-lg">
               <Wallet className="w-8 h-8" />
@@ -1275,9 +1365,31 @@ function AppContent() {
               <p className="text-2xl font-bold text-slate-900">{stats.totalCollected.toLocaleString()} FCFA</p>
             </div>
           </div>
-          
+
+          <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-rose-500 flex items-center gap-4">
+            <div className="p-3 bg-rose-50 text-rose-500 rounded-lg">
+              <TrendingDown className="w-8 h-8" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-slate-500">Total Dépenses</p>
+              <p className="text-2xl font-bold text-slate-900">{stats.totalExpenses.toLocaleString()} FCFA</p>
+            </div>
+          </div>
+
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-degha-green flex items-center gap-4">
             <div className="p-3 bg-green-50 text-degha-green rounded-lg">
+              <DollarSign className="w-8 h-8" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-slate-500">Solde Restant</p>
+              <p className={`text-2xl font-bold ${stats.netSolde >= 0 ? 'text-degha-green' : 'text-rose-600'}`}>
+                {stats.netSolde.toLocaleString()} FCFA
+              </p>
+            </div>
+          </div>
+          
+          <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-blue-500 flex items-center gap-4">
+            <div className="p-3 bg-blue-50 text-blue-500 rounded-lg">
               <CheckCircle className="w-8 h-8" />
             </div>
             <div>
@@ -1297,8 +1409,34 @@ function AppContent() {
           </div>
         </div>
 
-        {/* Table Section */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        {/* Tab Switcher */}
+        <div className="flex border-b border-slate-200 gap-4">
+          <button
+            onClick={() => setActiveAdminTab('members')}
+            className={`px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+              activeAdminTab === 'members'
+                ? 'border-degha-orange text-degha-orange bg-orange-50/10'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            Membres & Cotisations
+          </button>
+          <button
+            onClick={() => setActiveAdminTab('expenses')}
+            className={`px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+              activeAdminTab === 'expenses'
+                ? 'border-degha-orange text-degha-orange bg-orange-50/10'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <TrendingDown className="w-4 h-4" />
+            Gestion des Dépenses
+          </button>
+        </div>
+
+        {activeAdminTab === 'members' ? (
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-50/50">
             <h2 className="text-lg font-semibold text-slate-800">Détails des paiements</h2>
             <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
@@ -1331,7 +1469,7 @@ function AppContent() {
             <table className="min-w-full divide-y divide-slate-200">
               <thead className="bg-slate-50 sticky top-0 z-20 shadow-[0_1px_0_0_#e2e8f0]">
                 <tr>
-                  <th scope="col" className="px-4 py-3 text-left text-xs font-bold text-degha-green uppercase tracking-wider sticky left-0 top-0 bg-slate-50 z-30 shadow-[1px_0_0_0_#e2e8f0]">
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-bold text-degha-green uppercase tracking-wider sticky left-0 top-0 bg-slate-50 z-30 shadow-[1px_0_0_0_#e2e8f0] max-w-[120px] sm:max-w-[200px] md:max-w-none truncate" title="Nom & Prénoms">
                     Nom & Prénoms
                   </th>
                   <th scope="col" className="px-4 py-3 text-center text-xs font-semibold text-slate-600 uppercase tracking-wider bg-slate-50">
@@ -1379,13 +1517,20 @@ function AppContent() {
                         className="hover:bg-orange-50/40 transition-all duration-300 ease-in-out group"
                       >
                         <td 
-                          className="px-4 py-3 whitespace-nowrap text-sm font-medium text-slate-900 sticky left-0 bg-white group-hover:bg-orange-50/40 z-10 shadow-[1px_0_0_0_#e2e8f0] transition-all duration-300 ease-in-out relative cursor-pointer"
+                          className="px-4 py-3 whitespace-nowrap text-sm font-medium text-slate-900 sticky left-0 bg-white group-hover:bg-orange-50/40 z-10 shadow-[1px_0_0_0_#e2e8f0] transition-all duration-300 ease-in-out relative cursor-pointer group/name"
                           onMouseEnter={() => speakName(member.name)}
                           onMouseLeave={stopSpeaking}
-                          title="Écouter le nom"
                         >
                           <div className="absolute left-0 top-0 bottom-0 w-1 bg-degha-orange scale-y-0 group-hover:scale-y-100 transition-transform duration-300 ease-in-out origin-center" />
-                          {member.name}
+                          <div className="truncate max-w-[120px] sm:max-w-[200px] md:max-w-[250px] lg:max-w-none" title={member.name}>
+                            {member.name}
+                          </div>
+                          
+                          {/* Custom Tooltip (Desktop) */}
+                          <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-3 py-1.5 bg-slate-800 text-white text-xs font-bold rounded-md shadow-lg opacity-0 invisible group-hover/name:opacity-100 group-hover/name:visible transition-all duration-200 z-50 whitespace-nowrap hidden md:flex items-center gap-2 pointer-events-none">
+                            {member.name}
+                            <div className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-2 bg-slate-800 rotate-45" />
+                          </div>
                         </td>
                         <td className="px-4 py-3 whitespace-nowrap text-center bg-slate-50/30 group-hover:bg-orange-50/20 transition-colors duration-300">
                           <select
@@ -1472,9 +1617,273 @@ function AppContent() {
                 )}
                 </AnimatePresence>
               </tbody>
+              <tfoot className="bg-slate-50 font-bold sticky bottom-0 z-20 shadow-[0_-2px_0_0_#e2e8f0]">
+                {/* Total Mensuel */}
+                <tr className="border-b border-slate-100">
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs font-black text-degha-orange sticky left-0 bg-slate-50 z-30 shadow-[1px_0_0_0_#e2e8f0] max-w-[120px] sm:max-w-[200px] md:max-w-none truncate" title="Total Mensuel (Paiements)">
+                    Total Mensuel (Paiements)
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs text-center font-mono font-bold text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  {MONTHS.map(m => (
+                    <td key={m} className="px-2 py-2.5 whitespace-nowrap text-center text-xs font-black text-slate-800 bg-slate-50/50">
+                      {monthlyTotals[m] > 0 ? monthlyTotals[m].toLocaleString() : '-'}
+                    </td>
+                  ))}
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs text-center font-black text-degha-green bg-slate-50/50">
+                    {grandTotal.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs text-center font-black text-rose-600 bg-slate-50/50">
+                    {totalReste > 0 ? totalReste.toLocaleString() : '-'}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                </tr>
+
+                {/* Total Dépenses */}
+                <tr className="border-b border-slate-100">
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs font-black text-rose-500 sticky left-0 bg-slate-50 z-30 shadow-[1px_0_0_0_#e2e8f0] max-w-[120px] sm:max-w-[200px] md:max-w-none truncate" title="Dépenses Mensuelles">
+                    Dépenses Mensuelles
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs text-center font-mono font-bold text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  {MONTHS.map(m => (
+                    <td key={m} className="px-2 py-2.5 whitespace-nowrap text-center text-xs font-black text-rose-500 bg-slate-50/50">
+                      {monthlyExpenses[m] > 0 ? `-${monthlyExpenses[m].toLocaleString()}` : '-'}
+                    </td>
+                  ))}
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs text-center font-black text-rose-600 bg-slate-50/50">
+                    {grandTotalExpenses > 0 ? `-${grandTotalExpenses.toLocaleString()}` : '-'}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                </tr>
+
+                {/* Solde Net */}
+                <tr>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs font-black text-degha-green sticky left-0 bg-slate-50 z-30 shadow-[1px_0_0_0_#e2e8f0] max-w-[120px] sm:max-w-[200px] md:max-w-none truncate" title="Solde Net (Caisse)">
+                    Solde Net (Caisse)
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs text-center font-mono font-bold text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  {MONTHS.map(m => {
+                    const monthlyNet = (monthlyTotals[m] || 0) - (monthlyExpenses[m] || 0);
+                    return (
+                      <td key={m} className={`px-2 py-2.5 whitespace-nowrap text-center text-xs font-black bg-slate-50/50 ${
+                        monthlyNet >= 0 ? 'text-degha-green' : 'text-rose-600'
+                      }`}>
+                        {monthlyNet !== 0 ? monthlyNet.toLocaleString() : '-'}
+                      </td>
+                    );
+                  })}
+                  <td className={`px-4 py-2.5 whitespace-nowrap text-xs text-center font-black bg-slate-50/50 ${
+                    netBalance >= 0 ? 'text-degha-green' : 'text-rose-600'
+                  }`}>
+                    {netBalance.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </div>
+        ) : (
+          /* Expenses Section */
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {/* Form to Add Expense */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-6 h-fit">
+              <h2 className="text-lg font-bold text-slate-900 border-b pb-3 flex items-center gap-2">
+                <Plus className="w-5 h-5 text-degha-orange" />
+                Enregistrer une dépense
+              </h2>
+              <form onSubmit={handleAddExpense} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Détails de la dépense</label>
+                  <textarea
+                    required
+                    value={expenseDesc}
+                    onChange={(e) => setExpenseDesc(e.target.value)}
+                    placeholder="Ex: Achat de fournitures, Facture électricité..."
+                    rows={3}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm bg-white resize-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Mois</label>
+                    <select
+                      value={expenseMonth}
+                      onChange={(e) => setExpenseMonth(e.target.value as Month)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm bg-white cursor-pointer"
+                    >
+                      {MONTHS.map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Année</label>
+                    <select
+                      value={expenseYear}
+                      onChange={(e) => setExpenseYear(Number(e.target.value))}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm bg-white cursor-pointer"
+                    >
+                      {YEARS.map(y => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Montant (FCFA)</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      value={expenseAmount}
+                      onChange={(e) => setExpenseAmount(e.target.value)}
+                      placeholder="Ex: 5000"
+                      className="w-full pl-3 pr-16 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm bg-white"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                      FCFA
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-degha-green hover:bg-white text-white hover:text-degha-green font-bold py-2.5 rounded-lg border border-transparent hover:border-degha-green transition-all shadow-sm flex items-center justify-center gap-2 text-sm cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  Enregistrer la dépense
+                </button>
+              </form>
+            </div>
+
+            {/* List of Expenses */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 lg:col-span-2 flex flex-col min-h-[400px]">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b pb-4 mb-4">
+                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                  <TrendingDown className="w-5 h-5 text-rose-500" />
+                  Historique des dépenses ({currentYear})
+                </h2>
+                <div className="flex items-center gap-2">
+                  <Filter className="w-4 h-4 text-slate-400" />
+                  <select
+                    value={expenseFilterMonth}
+                    onChange={(e) => setExpenseFilterMonth(e.target.value as any)}
+                    className="px-3 py-1.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-xs bg-white cursor-pointer"
+                  >
+                    <option value="ALL">Tous les mois</option>
+                    {MONTHS.map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-x-auto">
+                {(() => {
+                  const filteredExpenses = expenses
+                    .filter(exp => exp.year === currentYear)
+                    .filter(exp => expenseFilterMonth === 'ALL' || exp.month === expenseFilterMonth)
+                    .sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
+
+                  if (filteredExpenses.length === 0) {
+                    return (
+                      <div className="text-center py-16 text-slate-500">
+                        <TrendingDown className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                        <p className="font-bold">Aucune dépense enregistrée.</p>
+                        <p className="text-sm text-slate-400 mt-1">
+                          {expenseFilterMonth === 'ALL'
+                            ? `Aucune dépense enregistrée pour l'année ${currentYear}.`
+                            : `Aucune dépense enregistrée en ${expenseFilterMonth} ${currentYear}.`}
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-slate-400 text-xs font-bold uppercase">
+                          <th className="py-2.5">Période</th>
+                          <th className="py-2.5">Description</th>
+                          <th className="py-2.5 text-right">Montant</th>
+                          <th className="py-2.5 text-center">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-sm">
+                        {filteredExpenses.map((exp) => (
+                          <tr key={exp.id} className="hover:bg-slate-50/50">
+                            <td className="py-3 font-semibold text-slate-700">
+                              <span className="bg-slate-100 text-slate-800 text-xs px-2 py-1 rounded">
+                                {exp.month} {exp.year}
+                              </span>
+                            </td>
+                            <td className="py-3">
+                              <p className="font-medium text-slate-900">{exp.description}</p>
+                              <p className="text-[10px] text-slate-400 mt-0.5">
+                                Enregistré le {new Date(exp.createdAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}
+                              </p>
+                            </td>
+                            <td className="py-3 text-right font-bold text-rose-600">
+                              -{exp.amount.toLocaleString()} FCFA
+                            </td>
+                            <td className="py-3 text-center">
+                              <button
+                                onClick={() => handleDeleteExpense(exp.id)}
+                                className="text-rose-600 hover:bg-rose-50 p-1.5 rounded-lg transition-colors cursor-pointer"
+                                title="Supprimer la dépense"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* History Modal for Admin */}

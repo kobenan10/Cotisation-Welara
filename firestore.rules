@@ -31,6 +31,14 @@ service cloud.firestore {
              (!('history' in data) || data.history is list);
     }
 
+    function isValidExpense(data) {
+      return data.keys().hasAll(['description', 'amount', 'month', 'year', 'createdAt']) &&
+             data.description is string && data.description.size() > 0 && data.description.size() < 500 &&
+             (data.amount is number || data.amount is int) && data.amount >= 0 &&
+             data.month is string &&
+             (data.year is number || data.year is int);
+    }
+
     match /members/{personalCode} {
       // Members can read their own document if they know the code (the document ID)
       // We only allow 'get' (single document read), not 'list' (querying multiple documents)
@@ -42,6 +50,16 @@ service cloud.firestore {
       // Only admin can create, update, or delete members
       allow create: if isAdmin() && isValidMember(request.resource.data);
       allow update: if isAdmin() && isValidMember(request.resource.data) && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAdmin();
+    }
+
+    match /expenses/{expenseId} {
+      // Allow read access to everyone so they can see where association funds go
+      allow read: if true;
+      
+      // Only admin can create, update, or delete expenses
+      allow create: if isAdmin() && isValidExpense(request.resource.data);
+      allow update: if isAdmin() && isValidExpense(request.resource.data);
       allow delete: if isAdmin();
     }
   }
