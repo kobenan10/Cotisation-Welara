@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, Component } from 'react';
 import Papa from 'papaparse';
-import { CheckCircle, AlertCircle, Users, Wallet, Plus, Search, Upload, Loader2, Calendar, LogIn, Key, LogOut, Trash2, Filter, Clock, X, Download, RefreshCw, TrendingDown, DollarSign } from 'lucide-react';
+import { CheckCircle, AlertCircle, Users, Wallet, Plus, Search, Upload, Loader2, Calendar, LogIn, Key, LogOut, Trash2, Filter, Clock, X, Download, RefreshCw, TrendingDown, TrendingUp, DollarSign } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, db, googleProvider } from './firebase';
@@ -128,6 +128,15 @@ interface Member {
 }
 
 interface Expense {
+  id: string;
+  description: string;
+  amount: number;
+  month: Month;
+  year: number;
+  createdAt: any;
+}
+
+interface Revenue {
   id: string;
   description: string;
   amount: number;
@@ -327,6 +336,8 @@ function AppContent() {
   const [members, setMembers] = useState<Member[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'UP_TO_DATE' | 'LATE'>('ALL');
+  const [memberMonthFilter, setMemberMonthFilter] = useState<'ALL' | Month>('ALL');
+  const [memberMonthStatus, setMemberMonthStatus] = useState<'ALL' | 'PAID' | 'UNPAID'>('ALL');
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberCategory, setNewMemberCategory] = useState<MemberCategory>('Adhérent');
   const [isImporting, setIsImporting] = useState(false);
@@ -341,7 +352,18 @@ function AppContent() {
   const [expenseMonth, setExpenseMonth] = useState<Month>('JAN');
   const [expenseYear, setExpenseYear] = useState<number>(new Date().getFullYear() >= 2025 && new Date().getFullYear() <= 2030 ? new Date().getFullYear() : 2025);
   const [expenseFilterMonth, setExpenseFilterMonth] = useState<'ALL' | Month>('ALL');
-  const [activeAdminTab, setActiveAdminTab] = useState<'members' | 'expenses'>('members');
+
+  // Revenues State (Entrées Exceptionnelles)
+  const [revenues, setRevenues] = useState<Revenue[]>([]);
+  const [revenueDesc, setRevenueDesc] = useState('');
+  const [revenueAmount, setRevenueAmount] = useState('');
+  const [revenueMonth, setRevenueMonth] = useState<Month>('JAN');
+  const [revenueYear, setRevenueYear] = useState<number>(new Date().getFullYear() >= 2025 && new Date().getFullYear() <= 2030 ? new Date().getFullYear() : 2025);
+  const [revenueFilterMonth, setRevenueFilterMonth] = useState<'ALL' | Month>('ALL');
+
+  const [confirmDialog, setConfirmDialog] = useState<{ isOpen: boolean; message: string; title: string; isDanger: boolean; onConfirm: () => void } | null>(null);
+
+  const [activeAdminTab, setActiveAdminTab] = useState<'members' | 'expenses' | 'revenues'>('members');
 
   // Auth State
   const [userRole, setUserRole] = useState<'admin' | 'member' | null>(null);
@@ -432,6 +454,21 @@ function AppContent() {
         setExpenses(expensesData);
       }, (error) => {
         console.error("Erreur Firestore (expenses):", error);
+      });
+      return () => unsubscribe();
+    }
+  }, [userRole, isAuthReady]);
+
+  useEffect(() => {
+    if (userRole && isAuthReady) {
+      const unsubscribe = onSnapshot(collection(db, 'revenues'), (snapshot) => {
+        const revenuesData: Revenue[] = [];
+        snapshot.forEach((doc) => {
+          revenuesData.push({ id: doc.id, ...doc.data() } as Revenue);
+        });
+        setRevenues(revenuesData);
+      }, (error) => {
+        console.error("Erreur Firestore (revenues):", error);
       });
       return () => unsubscribe();
     }
@@ -707,10 +744,14 @@ function AppContent() {
       .filter(exp => exp.year === currentYear)
       .reduce((sum, exp) => sum + exp.amount, 0);
 
-    const netSolde = totalCollected - totalExpenses;
+    const totalRevenues = revenues
+      .filter(rev => rev.year === currentYear)
+      .reduce((sum, rev) => sum + rev.amount, 0);
 
-    return { totalCollected, upToDateCount, totalExpenses, netSolde };
-  }, [members, expenses, currentYear]);
+    const netSolde = totalCollected + totalRevenues - totalExpenses;
+
+    return { totalCollected, upToDateCount, totalExpenses, totalRevenues, netSolde };
+  }, [members, expenses, revenues, currentYear]);
 
   const handlePaymentChange = async (memberId: string, year: number, month: Month, value: string) => {
     const numValue = value === '' ? '' : parseInt(value, 10);
@@ -776,12 +817,20 @@ function AppContent() {
     }
   };
 
-  const handleDeleteMember = async (memberId: string) => {
-    try {
-      await deleteDoc(doc(db, 'members', memberId));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `members/${memberId}`);
-    }
+  const handleDeleteMember = (memberId: string) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: "Supprimer le membre",
+      message: "Voulez-vous vraiment supprimer ce membre et tout son historique de paiement ?",
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'members', memberId));
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, `members/${memberId}`);
+        }
+      }
+    });
   };
 
   const handleCategoryChange = async (memberId: string, category: MemberCategory) => {
@@ -819,28 +868,88 @@ function AppContent() {
     }
   };
 
-  const handleDeleteExpense = async (expenseId: string) => {
-    if (!confirm("Voulez-vous vraiment supprimer cette dépense ?")) return;
-    try {
-      await deleteDoc(doc(db, 'expenses', expenseId));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `expenses/${expenseId}`);
-      alert("Erreur lors de la suppression.");
+  const handleDeleteExpense = (expenseId: string) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: "Supprimer la dépense",
+      message: "Voulez-vous vraiment supprimer cette dépense ?",
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'expenses', expenseId));
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, `expenses/${expenseId}`);
+          alert("Erreur lors de la suppression.");
+        }
+      }
+    });
+  };
+
+  const handleAddRevenue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const desc = revenueDesc.trim();
+    if (!desc) return;
+    const amountNum = parseFloat(revenueAmount);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      alert("Veuillez saisir un montant valide supérieur à 0.");
+      return;
     }
+
+    try {
+      const revenueId = Date.now().toString() + Math.random().toString(36).substring(2, 9);
+      await setDoc(doc(db, 'revenues', revenueId), {
+        description: desc,
+        amount: amountNum,
+        month: revenueMonth,
+        year: revenueYear,
+        createdAt: new Date().toISOString()
+      });
+      setRevenueDesc('');
+      setRevenueAmount('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `revenues`);
+      alert("Erreur lors de l'enregistrement de l'entrée.");
+    }
+  };
+
+  const handleDeleteRevenue = (revenueId: string) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: "Supprimer l'entrée",
+      message: "Voulez-vous vraiment supprimer cette entrée ?",
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'revenues', revenueId));
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, `revenues/${revenueId}`);
+          alert("Erreur lors de la suppression.");
+        }
+      }
+    });
   };
 
   const filteredMembers = members.filter(m => {
     const matchesSearch = m.name.toLowerCase().includes(searchTerm.toLowerCase());
     if (!matchesSearch) return false;
     
-    if (statusFilter === 'ALL') return true;
+    if (statusFilter !== 'ALL') {
+      const annualTarget = CATEGORY_ANNUAL_TARGET[m.category || 'Adhérent'];
+      const total = calculateTotal(m.payments, currentYear);
+      const isUpToDate = total >= annualTarget;
+      
+      if (statusFilter === 'UP_TO_DATE' && !isUpToDate) return false;
+      if (statusFilter === 'LATE' && isUpToDate) return false;
+    }
     
-    const annualTarget = CATEGORY_ANNUAL_TARGET[m.category || 'Adhérent'];
-    const total = calculateTotal(m.payments, currentYear);
-    const isUpToDate = total >= annualTarget;
-    
-    if (statusFilter === 'UP_TO_DATE') return isUpToDate;
-    if (statusFilter === 'LATE') return !isUpToDate;
+    if (memberMonthFilter !== 'ALL' && memberMonthStatus !== 'ALL') {
+      const yearPayments = m.payments[currentYear] || {};
+      const paidValue = yearPayments[memberMonthFilter];
+      const hasPaid = typeof paidValue === 'number' && paidValue > 0;
+      
+      if (memberMonthStatus === 'PAID' && !hasPaid) return false;
+      if (memberMonthStatus === 'UNPAID' && hasPaid) return false;
+    }
     
     return true;
   });
@@ -883,9 +992,26 @@ function AppContent() {
     return MONTHS.reduce((sum, m) => sum + (monthlyExpenses[m] || 0), 0);
   }, [monthlyExpenses]);
 
+  const monthlyRevenues = useMemo(() => {
+    const totals = {} as Record<Month, number>;
+    MONTHS.forEach(m => {
+      totals[m] = 0;
+    });
+    revenues.forEach(rev => {
+      if (rev.year === currentYear) {
+        totals[rev.month] += rev.amount;
+      }
+    });
+    return totals;
+  }, [revenues, currentYear]);
+
+  const grandTotalRevenues = useMemo(() => {
+    return MONTHS.reduce((sum, m) => sum + (monthlyRevenues[m] || 0), 0);
+  }, [monthlyRevenues]);
+
   const netBalance = useMemo(() => {
-    return grandTotal - grandTotalExpenses;
-  }, [grandTotal, grandTotalExpenses]);
+    return grandTotal + grandTotalRevenues - grandTotalExpenses;
+  }, [grandTotal, grandTotalRevenues, grandTotalExpenses]);
 
   const totalReste = useMemo(() => {
     return filteredMembers.reduce((sum, member) => {
@@ -1213,15 +1339,21 @@ function AppContent() {
               <span className="text-[10px] bg-purple-900 text-white px-2 py-1 rounded-md font-mono font-bold animate-bounce">v8.6 - GESTION DES DÉPENSES</span>
               <button 
                 onClick={() => {
-                  if (confirm("Voulez-vous forcer le nettoyage du cache et recharger la page ?")) {
-                    if ('serviceWorker' in navigator) {
-                      navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
+                  setConfirmDialog({
+                    isOpen: true,
+                    title: "Nettoyage du cache",
+                    message: "Voulez-vous forcer le nettoyage du cache et recharger la page ?",
+                    isDanger: true,
+                    onConfirm: () => {
+                      if ('serviceWorker' in navigator) {
+                        navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
+                      }
+                      if ('caches' in window) {
+                        caches.keys().then(names => names.forEach(n => caches.delete(n)));
+                      }
+                      window.location.reload();
                     }
-                    if ('caches' in window) {
-                      caches.keys().then(names => names.forEach(n => caches.delete(n)));
-                    }
-                    window.location.reload();
-                  }
+                  });
                 }}
                 className="text-[10px] bg-rose-100 text-rose-600 px-2 py-1 rounded-md hover:bg-rose-200 transition-colors"
               >
@@ -1264,16 +1396,21 @@ function AppContent() {
             
             <button 
               type="button"
-              onClick={async () => {
-                if (confirm("Voulez-vous réorganiser TOUS les paiements de ce membre pour combler les retards chronologiquement ?")) {
-                  const batch = writeBatch(db);
-                  members.forEach(m => {
-                    const redistributed = redistributePayments(m.payments);
-                    batch.update(doc(db, 'members', m.id), { payments: redistributed });
-                  });
-                  await batch.commit();
-                  alert("Paiements réorganisés avec succès !");
-                }
+              onClick={() => {
+                setConfirmDialog({
+                  isOpen: true,
+                  title: "Réorganiser les paiements",
+                  message: "Voulez-vous réorganiser TOUS les paiements de ce membre pour combler les retards chronologiquement ?",
+                  isDanger: true,
+                  onConfirm: async () => {
+                    const batch = writeBatch(db);
+                    members.forEach(m => {
+                      const redistributed = redistributePayments(m.payments);
+                      batch.update(doc(db, 'members', m.id), { payments: redistributed });
+                    });
+                    await batch.commit();
+                  }
+                });
               }}
               className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-bold transition-all cursor-pointer border border-slate-300 shadow-sm"
               title="Réorganiser les paiements pour combler les mois vides dans l'ordre"
@@ -1293,9 +1430,13 @@ function AppContent() {
 
             <button 
               type="button"
-              onClick={async () => {
-                if (confirm("⚠️ ATTENTION : Cette action va effacer TOUS les paiements et TOUT l'historique de TOUS les membres. Cette commande est irréversible.\n\nVoulez-vous continuer ?")) {
-                  if (confirm("Êtes-vous ABSOLUMENT sûr ?\nTous les compteurs (Total Collecté, Membres à jour) reviendront à zéro.")) {
+              onClick={() => {
+                setConfirmDialog({
+                  isOpen: true,
+                  title: "Remise à zéro complète",
+                  message: "⚠️ ATTENTION : Cette action va effacer TOUS les paiements et TOUT l'historique de TOUS les membres. Cette commande est irréversible.\n\nÊtes-vous ABSOLUMENT sûr ? Tous les compteurs reviendront à zéro.",
+                  isDanger: true,
+                  onConfirm: async () => {
                     try {
                       const batch = writeBatch(db);
                       members.forEach(m => {
@@ -1305,13 +1446,11 @@ function AppContent() {
                         });
                       });
                       await batch.commit();
-                      alert("Toutes les données de paiement et d'historique ont été remises à zéro.");
                     } catch (error) {
                       console.error("Erreur lors du reset:", error);
-                      alert("Une erreur est survenue lors de la réinitialisation.");
                     }
                   }
-                }
+                });
               }}
               className="bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-bold transition-all cursor-pointer border border-rose-200 hover:border-rose-600 shadow-sm"
               title="Remettre tous les compteurs à zéro"
@@ -1355,14 +1494,24 @@ function AppContent() {
         </header>
 
         {/* Dashboard Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6">
           <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-degha-orange flex items-center gap-4">
             <div className="p-3 bg-orange-50 text-degha-orange rounded-lg">
               <Wallet className="w-8 h-8" />
             </div>
             <div>
-              <p className="text-sm font-medium text-slate-500">Total Collecté</p>
+              <p className="text-sm font-medium text-slate-500">Total Cotisations</p>
               <p className="text-2xl font-bold text-slate-900">{stats.totalCollected.toLocaleString()} FCFA</p>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-emerald-500 flex items-center gap-4">
+            <div className="p-3 bg-emerald-50 text-emerald-500 rounded-lg">
+              <TrendingUp className="w-8 h-8" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-slate-500">Entrées Exceptionnelles</p>
+              <p className="text-2xl font-bold text-slate-900">{stats.totalRevenues.toLocaleString()} FCFA</p>
             </div>
           </div>
 
@@ -1423,6 +1572,17 @@ function AppContent() {
             Membres & Cotisations
           </button>
           <button
+            onClick={() => setActiveAdminTab('revenues')}
+            className={`px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
+              activeAdminTab === 'revenues'
+                ? 'border-degha-orange text-degha-orange bg-orange-50/10'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <TrendingUp className="w-4 h-4" />
+            Entrées Exceptionnelles
+          </button>
+          <button
             onClick={() => setActiveAdminTab('expenses')}
             className={`px-4 py-2.5 font-bold text-sm border-b-2 transition-all flex items-center gap-2 cursor-pointer ${
               activeAdminTab === 'expenses'
@@ -1439,7 +1599,7 @@ function AppContent() {
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-50/50">
             <h2 className="text-lg font-semibold text-slate-800">Détails des paiements</h2>
-            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+            <div className="flex flex-col sm:flex-row flex-wrap gap-3 w-full sm:w-auto">
               <div className="relative w-full sm:w-auto">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
@@ -1457,11 +1617,41 @@ function AppContent() {
                   onChange={(e) => setStatusFilter(e.target.value as any)}
                   className="pl-9 pr-8 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm w-full sm:w-auto bg-white appearance-none cursor-pointer"
                 >
-                  <option value="ALL">Tous les statuts</option>
-                  <option value="UP_TO_DATE">À jour</option>
-                  <option value="LATE">En retard</option>
+                  <option value="ALL">Statut annuel</option>
+                  <option value="UP_TO_DATE">À jour (Année)</option>
+                  <option value="LATE">En retard (Année)</option>
                 </select>
               </div>
+              <div className="relative w-full sm:w-auto">
+                <Calendar className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <select
+                  value={memberMonthFilter}
+                  onChange={(e) => {
+                    setMemberMonthFilter(e.target.value as any);
+                    if (e.target.value === 'ALL') setMemberMonthStatus('ALL');
+                  }}
+                  className="pl-9 pr-8 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm w-full sm:w-auto bg-white appearance-none cursor-pointer"
+                >
+                  <option value="ALL">Tous les mois</option>
+                  {MONTHS.map(m => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              {memberMonthFilter !== 'ALL' && (
+                <div className="relative w-full sm:w-auto">
+                  <Filter className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <select
+                    value={memberMonthStatus}
+                    onChange={(e) => setMemberMonthStatus(e.target.value as any)}
+                    className="pl-9 pr-8 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm w-full sm:w-auto bg-white appearance-none cursor-pointer"
+                  >
+                    <option value="ALL">Statut ({memberMonthFilter})</option>
+                    <option value="PAID">A payé</option>
+                    <option value="UNPAID">N'a pas payé</option>
+                  </select>
+                </div>
+              )}
             </div>
           </div>
           
@@ -1618,10 +1808,10 @@ function AppContent() {
                 </AnimatePresence>
               </tbody>
               <tfoot className="bg-slate-50 font-bold sticky bottom-0 z-20 shadow-[0_-2px_0_0_#e2e8f0]">
-                {/* Total Mensuel */}
+                {/* Total Cotisations */}
                 <tr className="border-b border-slate-100">
                   <td className="px-4 py-2.5 whitespace-nowrap text-xs font-black text-degha-orange sticky left-0 bg-slate-50 z-30 shadow-[1px_0_0_0_#e2e8f0] max-w-[120px] sm:max-w-[200px] md:max-w-none truncate" title="Total Mensuel (Paiements)">
-                    Total Mensuel (Paiements)
+                    Total Cotisations Mensuelles
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
                     -
@@ -1639,6 +1829,36 @@ function AppContent() {
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-xs text-center font-black text-rose-600 bg-slate-50/50">
                     {totalReste > 0 ? totalReste.toLocaleString() : '-'}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                </tr>
+
+                {/* Entrées Exceptionnelles */}
+                <tr className="border-b border-slate-100">
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs font-black text-emerald-600 sticky left-0 bg-slate-50 z-30 shadow-[1px_0_0_0_#e2e8f0] max-w-[120px] sm:max-w-[200px] md:max-w-none truncate" title="Entrées Exceptionnelles">
+                    Entrées Exceptionnelles
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs text-center font-mono font-bold text-slate-400 bg-slate-50/50">
+                    -
+                  </td>
+                  {MONTHS.map(m => (
+                    <td key={m} className="px-2 py-2.5 whitespace-nowrap text-center text-xs font-black text-emerald-600 bg-slate-50/50">
+                      {monthlyRevenues[m] > 0 ? `+${monthlyRevenues[m].toLocaleString()}` : '-'}
+                    </td>
+                  ))}
+                  <td className="px-4 py-2.5 whitespace-nowrap text-xs text-center font-black text-emerald-600 bg-slate-50/50">
+                    {grandTotalRevenues > 0 ? `+${grandTotalRevenues.toLocaleString()}` : '-'}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
+                    -
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-center text-xs text-slate-400 bg-slate-50/50">
                     -
@@ -1690,7 +1910,7 @@ function AppContent() {
                     -
                   </td>
                   {MONTHS.map(m => {
-                    const monthlyNet = (monthlyTotals[m] || 0) - (monthlyExpenses[m] || 0);
+                    const monthlyNet = (monthlyTotals[m] || 0) + (monthlyRevenues[m] || 0) - (monthlyExpenses[m] || 0);
                     return (
                       <td key={m} className={`px-2 py-2.5 whitespace-nowrap text-center text-xs font-black bg-slate-50/50 ${
                         monthlyNet >= 0 ? 'text-degha-green' : 'text-rose-600'
@@ -1718,6 +1938,173 @@ function AppContent() {
             </table>
           </div>
         </div>
+        ) : activeAdminTab === 'revenues' ? (
+          /* Revenues Section (Entrées Exceptionnelles) */
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {/* Form to Add Revenue */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-6 h-fit">
+              <h2 className="text-lg font-bold text-slate-900 border-b pb-3 flex items-center gap-2">
+                <Plus className="w-5 h-5 text-degha-orange" />
+                Enregistrer une entrée exceptionnelle
+              </h2>
+              <form onSubmit={handleAddRevenue} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Détails de l'entrée</label>
+                  <textarea
+                    required
+                    value={revenueDesc}
+                    onChange={(e) => setRevenueDesc(e.target.value)}
+                    placeholder="Ex: Subvention, Don exceptionnel, Vente de matériel..."
+                    rows={3}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm bg-white resize-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Mois</label>
+                    <select
+                      value={revenueMonth}
+                      onChange={(e) => setRevenueMonth(e.target.value as Month)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm bg-white cursor-pointer"
+                    >
+                      {MONTHS.map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Année</label>
+                    <select
+                      value={revenueYear}
+                      onChange={(e) => setRevenueYear(Number(e.target.value))}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm bg-white cursor-pointer"
+                    >
+                      {YEARS.map(y => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Montant (FCFA)</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      value={revenueAmount}
+                      onChange={(e) => setRevenueAmount(e.target.value)}
+                      placeholder="Ex: 10000"
+                      className="w-full pl-3 pr-16 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-sm bg-white"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                      FCFA
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-degha-green hover:bg-white text-white hover:text-degha-green font-bold py-2.5 rounded-lg border border-transparent hover:border-degha-green transition-all shadow-sm flex items-center justify-center gap-2 text-sm cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  Enregistrer l'entrée
+                </button>
+              </form>
+            </div>
+
+            {/* List of Revenues */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 lg:col-span-2 flex flex-col min-h-[400px]">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b pb-4 mb-4">
+                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5 text-emerald-500" />
+                  Historique des entrées exceptionnelles ({currentYear})
+                </h2>
+                <div className="flex items-center gap-2">
+                  <Filter className="w-4 h-4 text-slate-400" />
+                  <select
+                    value={revenueFilterMonth}
+                    onChange={(e) => setRevenueFilterMonth(e.target.value as any)}
+                    className="px-3 py-1.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-degha-green focus:border-degha-green outline-none text-xs bg-white cursor-pointer"
+                  >
+                    <option value="ALL">Tous les mois</option>
+                    {MONTHS.map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-x-auto">
+                {(() => {
+                  const filteredRevenues = revenues
+                    .filter(rev => rev.year === currentYear)
+                    .filter(rev => revenueFilterMonth === 'ALL' || rev.month === revenueFilterMonth)
+                    .sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
+
+                  if (filteredRevenues.length === 0) {
+                    return (
+                      <div className="text-center py-16 text-slate-500">
+                        <TrendingUp className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                        <p className="font-bold">Aucune entrée enregistrée.</p>
+                        <p className="text-sm text-slate-400 mt-1">
+                          {revenueFilterMonth === 'ALL'
+                            ? `Aucune entrée enregistrée pour l'année ${currentYear}.`
+                            : `Aucune entrée enregistrée en ${revenueFilterMonth} ${currentYear}.`}
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-slate-400 text-xs font-bold uppercase">
+                          <th className="py-2.5">Période</th>
+                          <th className="py-2.5">Description</th>
+                          <th className="py-2.5 text-right">Montant</th>
+                          <th className="py-2.5 text-center">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-sm">
+                        {filteredRevenues.map((rev) => (
+                          <tr key={rev.id} className="hover:bg-slate-50/50">
+                            <td className="py-3 font-semibold text-slate-700">
+                              <span className="bg-slate-100 text-slate-800 text-xs px-2 py-1 rounded">
+                                {rev.month} {rev.year}
+                              </span>
+                            </td>
+                            <td className="py-3">
+                              <p className="font-medium text-slate-900">{rev.description}</p>
+                              {rev.createdAt && (
+                                <p className="text-[10px] text-slate-400 mt-0.5">
+                                  Enregistré le {new Date(rev.createdAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}
+                                </p>
+                              )}
+                            </td>
+                            <td className="py-3 text-right font-bold text-emerald-600">
+                              +{rev.amount.toLocaleString()} FCFA
+                            </td>
+                            <td className="py-3 text-center">
+                              <button
+                                onClick={() => handleDeleteRevenue(rev.id)}
+                                className="text-rose-600 hover:bg-rose-50 p-1.5 rounded-lg transition-colors cursor-pointer"
+                                title="Supprimer l'entrée"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
         ) : (
           /* Expenses Section */
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -1929,6 +2316,49 @@ function AppContent() {
                     <p>Aucun historique disponible pour ce membre.</p>
                   </div>
                 )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Global Confirmation Dialog */}
+      <AnimatePresence>
+        {confirmDialog && confirmDialog.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-sm overflow-hidden"
+            >
+              <div className={`p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50 border-l-8 ${confirmDialog.isDanger ? 'border-rose-500' : 'border-degha-orange'}`}>
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                  <AlertCircle className={`w-5 h-5 ${confirmDialog.isDanger ? 'text-rose-500' : 'text-degha-orange'}`} />
+                  {confirmDialog.title}
+                </h3>
+              </div>
+              <div className="p-5">
+                <p className="text-slate-600 text-sm whitespace-pre-line leading-relaxed">
+                  {confirmDialog.message}
+                </p>
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    onClick={() => setConfirmDialog(null)}
+                    className="px-4 py-2 text-sm font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    onClick={() => {
+                      confirmDialog.onConfirm();
+                      setConfirmDialog(null);
+                    }}
+                    className={`px-4 py-2 text-sm font-bold text-white rounded-lg transition-colors ${confirmDialog.isDanger ? 'bg-rose-500 hover:bg-rose-600' : 'bg-degha-orange hover:bg-orange-600'}`}
+                  >
+                    Confirmer
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>

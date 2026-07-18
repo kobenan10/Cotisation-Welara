@@ -52,6 +52,34 @@
         }
       },
       "required": ["description", "amount", "month", "year", "createdAt"]
+    },
+    "Revenue": {
+      "title": "Revenue",
+      "description": "An exceptional entry/revenue of the association",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Description of the exceptional entry"
+        },
+        "amount": {
+          "type": "number",
+          "description": "Amount of the exceptional entry"
+        },
+        "month": {
+          "type": "string",
+          "description": "Month of the exceptional entry"
+        },
+        "year": {
+          "type": "number",
+          "description": "Year of the exceptional entry"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["description", "amount", "month", "year", "createdAt"]
     }
   },
   "firestore": {
@@ -66,6 +94,12 @@
         "$ref": "#/entities/Expense"
       },
       "description": "Expenses collection"
+    },
+    "/revenues/{revenueId}": {
+      "schema": {
+        "$ref": "#/entities/Revenue"
+      },
+      "description": "Exceptional revenues collection"
     }
   }
 }

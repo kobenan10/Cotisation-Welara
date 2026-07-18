@@ -39,6 +39,14 @@ service cloud.firestore {
              (data.year is number || data.year is int);
     }
 
+    function isValidRevenue(data) {
+      return data.keys().hasAll(['description', 'amount', 'month', 'year', 'createdAt']) &&
+             data.description is string && data.description.size() > 0 && data.description.size() < 500 &&
+             (data.amount is number || data.amount is int) && data.amount >= 0 &&
+             data.month is string &&
+             (data.year is number || data.year is int);
+    }
+
     match /members/{personalCode} {
       // Members can read their own document if they know the code (the document ID)
       // We only allow 'get' (single document read), not 'list' (querying multiple documents)
@@ -60,6 +68,16 @@ service cloud.firestore {
       // Only admin can create, update, or delete expenses
       allow create: if isAdmin() && isValidExpense(request.resource.data);
       allow update: if isAdmin() && isValidExpense(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /revenues/{revenueId} {
+      // Allow read access to everyone so they can see exceptional revenues
+      allow read: if true;
+      
+      // Only admin can create, update, or delete revenues
+      allow create: if isAdmin() && isValidRevenue(request.resource.data);
+      allow update: if isAdmin() && isValidRevenue(request.resource.data);
       allow delete: if isAdmin();
     }
   }
